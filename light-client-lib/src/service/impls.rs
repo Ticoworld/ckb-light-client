@@ -643,11 +643,16 @@ impl LightClientChainService {
         }
     }
 
-    /// Queue an untrusted candidate hash for proof-backed lookup at a historical height.
+    /// Starts verification of a historical block header.
     ///
-    /// The opaque request handle is process-local and becomes invalid after restart. Polling
-    /// requires proof completion associated with this operation and its accepted-tip anchor;
-    /// cached headers alone do not complete the operation.
+    /// The caller provides a block number and an untrusted candidate header hash. The light client
+    /// verifies that candidate using its existing block-proof verification path.
+    ///
+    /// The returned handle is valid only for the current process and becomes invalid after
+    /// restart.
+    ///
+    /// A cached header does not automatically satisfy this request. Verification must complete
+    /// for this specific request against the chain tip that was accepted when the request started.
     pub fn request_historical_header_proof(
         &self,
         block_number: ckb_jsonrpc_types::BlockNumber,
@@ -683,7 +688,10 @@ impl LightClientChainService {
         Ok(HistoricalHeaderProofRequest::new(id))
     }
 
-    /// Poll a historical header proof operation.
+    /// Returns the current status of a historical header verification request.
+    ///
+    /// If the accepted chain tip changes before verification completes, the request becomes stale
+    /// and the caller should start a new request.
     pub fn poll_historical_header_proof(
         &self,
         request: &HistoricalHeaderProofRequest,

@@ -39,10 +39,9 @@ pub enum FetchStatus<T> {
     NotFound,
 }
 
-/// Opaque handle for a transient historical-header proof operation.
+/// Opaque handle for a historical header verification request.
 ///
-/// The handle is valid only for the light-client process that created it. It is not durable
-/// across restart.
+/// This handle is valid only in the process that created it and becomes invalid after restart.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct HistoricalHeaderProofRequest {
     id: usize,
@@ -58,33 +57,35 @@ impl HistoricalHeaderProofRequest {
     }
 }
 
-/// Progress and result for a transient historical-header proof operation.
+/// Current status or result of a historical header verification request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoricalHeaderProofStatus {
-    /// The candidate is queued for a proof request.
+    /// Waiting to be sent to a peer.
     Added { timestamp: Uint64 },
-    /// The proof request has been sent and is still pending.
+    /// The proof request has been sent to a peer and is waiting for a response.
     Fetching { first_sent: Uint64 },
-    /// Terminal: a peer did not provide the requested header, or the proved header had another
-    /// height. This is not a cryptographic proof of non-inclusion; issue a new request to retry.
+    /// The peer did not provide the requested header at the requested height.
+    ///
+    /// This does not prove that the header does not exist.
     Unavailable,
-    /// The accepted client tip changed while this request was pending.
+    /// The accepted chain tip changed after this request started. Start a new request to verify
+    /// against the new tip.
     StaleAnchor {
-        /// The tip hash captured when the request was created.
+        /// The tip used when this request started.
         requested_anchor: H256,
-        /// The currently accepted tip hash.
+        /// The currently accepted tip.
         current_anchor: H256,
     },
-    /// The requested height and hash were proved against the captured accepted tip.
+    /// The requested block number and header hash were successfully verified.
     Verified {
-        /// The authenticated historical block height.
+        /// Verified block number.
         block_number: BlockNumber,
-        /// The authenticated block hash.
+        /// Verified block hash.
         block_hash: H256,
-        /// The accepted tip hash against which the proof was verified.
+        /// Tip against which the proof was verified.
         anchor_hash: H256,
     },
-    /// The transient operation exceeded its bounded lifetime or its handle is no longer known.
+    /// The request expired or its process-local handle is no longer known.
     Expired,
 }
 
