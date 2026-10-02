@@ -7,10 +7,12 @@
 /// allowing it to work with RocksDB, SQLite, or IndexedDB without code duplication.
 use crate::{
     error::{Error, Result},
+    protocols::light_client::HistoricalHeaderProofState,
     service::{
         helpers::{build_filter_options, build_query_options},
-        Cell, CellType, CellsCapacity, FetchStatus, Order, Pagination, ScriptType, SearchKey,
-        Status, TransactionWithStatus, Tx, TxStatus, TxWithCell, TxWithCells,
+        Cell, CellType, CellsCapacity, FetchStatus, HistoricalHeaderProofRequest,
+        HistoricalHeaderProofStatus, Order, Pagination, ScriptType, SearchKey, Status,
+        TransactionWithStatus, Tx, TxStatus, TxWithCell, TxWithCells,
     },
     storage::{
         extract_raw_data, Key, KeyPrefix, LightClientStorage, StorageWithChainData, LAST_STATE_KEY,
@@ -638,6 +640,94 @@ impl LightClientChainService {
         }
         FetchStatus::Added {
             timestamp: now.into(),
+        }
+    }
+
+    /// Queue an untrusted candidate hash for proof-backed lookup at a historical height.
+    ///
+    /// The opaque request handle is process-local and becomes invalid after restart. Polling
+    /// requires proof completion associated with this operation and its accepted-tip anchor;
+    /// cached headers alone do not complete the operation.
+    pub fn request_historical_header_proof(
+        &self,
+        block_number: ckb_jsonrpc_types::BlockNumber,
+        candidate_hash: H256,
+    ) -> Result<HistoricalHeaderProofRequest> {
+        let block_number: u64 = block_number.into();
+        if block_number == 0 {
+            return Err(Error::runtime(
+                "genesis header is authenticated by the configured genesis identity",
+            ));
+        }
+
+        let tip_header = self.swc.storage().get_tip_header();
+        let tip_number: u64 = tip_header.raw().number().unpack();
+        if tip_number == 0 {
+            return Err(Error::runtime(
+                "historical header proof requires an accepted non-genesis tip",
+            ));
+        }
+        if block_number >= tip_number {
+            return Err(Error::runtime(
+                "historical header proof height must be below the accepted tip",
+            ));
+        }
+
+        let anchor_hash = tip_header.calc_header_hash();
+        let id = self.swc.peers().add_historical_header_proof(
+            block_number,
+            candidate_hash.pack(),
+            anchor_hash,
+            unix_time_as_millis(),
+        );
+        Ok(HistoricalHeaderProofRequest::new(id))
+    }
+
+    /// Poll a historical header proof operation.
+    pub fn poll_historical_header_proof(
+        &self,
+        request: &HistoricalHeaderProofRequest,
+    ) -> Result<HistoricalHeaderProofStatus> {
+        let peers = self.swc.peers();
+        let current_anchor = self.swc.storage().get_tip_header().calc_header_hash();
+        peers.cleanup_historical_header_proofs(&current_anchor, unix_time_as_millis());
+        let Some(info) = peers.historical_header_proof(request.id()) else {
+            return Ok(HistoricalHeaderProofStatus::Expired);
+        };
+
+        match info.state {
+            HistoricalHeaderProofState::Pending => Ok(HistoricalHeaderProofStatus::Added {
+                timestamp: info.created_ts.into(),
+            }),
+            HistoricalHeaderProofState::InFlight { first_sent, .. } => {
+                Ok(HistoricalHeaderProofStatus::Fetching {
+                    first_sent: first_sent.into(),
+                })
+            }
+            HistoricalHeaderProofState::ProofComplete { .. } => {
+                let final_anchor = self.swc.storage().get_tip_header().calc_header_hash();
+                if final_anchor != info.target.anchor_hash {
+                    peers.mark_historical_header_proof_stale(request.id(), unix_time_as_millis());
+                    return Ok(HistoricalHeaderProofStatus::StaleAnchor {
+                        requested_anchor: info.target.anchor_hash.unpack(),
+                        current_anchor: final_anchor.unpack(),
+                    });
+                }
+                Ok(HistoricalHeaderProofStatus::Verified {
+                    block_number: info.target.block_number.into(),
+                    block_hash: info.target.candidate_hash.unpack(),
+                    anchor_hash: info.target.anchor_hash.unpack(),
+                })
+            }
+            HistoricalHeaderProofState::Unavailable { .. } => {
+                Ok(HistoricalHeaderProofStatus::Unavailable)
+            }
+            HistoricalHeaderProofState::StaleAnchor { .. } => {
+                Ok(HistoricalHeaderProofStatus::StaleAnchor {
+                    requested_anchor: info.target.anchor_hash.unpack(),
+                    current_anchor: current_anchor.unpack(),
+                })
+            }
         }
     }
 

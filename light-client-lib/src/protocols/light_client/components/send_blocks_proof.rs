@@ -1,4 +1,5 @@
 use ckb_network::{BoxedCKBProtocolContext, PeerIndex, SupportProtocols};
+use ckb_systemtime::unix_time_as_millis;
 use ckb_types::{
     core::{ExtraHashView, HeaderView},
     packed,
@@ -243,8 +244,24 @@ impl<'a> SendBlocksProofProcess<'a> {
                 }
             }
 
+            let proof_anchor = original_request.last_hash();
             for (header, extension) in headers.into_iter().zip(extensions) {
-                if self.protocol.peers().remove_fetching_header(&header.hash()) {
+                let block_hash = header.hash();
+                let normal_fetch = original_request.normal_fetch_hashes().contains(&block_hash)
+                    && self.protocol.peers().remove_fetching_header(&block_hash);
+                let historical_targets: Vec<_> = original_request
+                    .historical_targets()
+                    .iter()
+                    .filter(|target| {
+                        target.candidate_hash == block_hash && target.anchor_hash == proof_anchor
+                    })
+                    .collect();
+                let matching_historical_targets: Vec<_> = historical_targets
+                    .iter()
+                    .filter(|target| target.block_number == header.number())
+                    .collect();
+
+                if normal_fetch || !matching_historical_targets.is_empty() {
                     self.protocol
                         .storage()
                         .add_fetched_header(&HeaderWithExtension {
@@ -252,11 +269,47 @@ impl<'a> SendBlocksProofProcess<'a> {
                             extension,
                         });
                 }
+
+                for target in historical_targets {
+                    if target.block_number == header.number() {
+                        self.protocol.peers().complete_historical_header_proof(
+                            target,
+                            self.peer_index,
+                            unix_time_as_millis(),
+                        );
+                    } else {
+                        self.protocol
+                            .peers()
+                            .mark_historical_header_proof_unavailable(
+                                target,
+                                self.peer_index,
+                                unix_time_as_millis(),
+                            );
+                    }
+                }
             }
         }
+        let normal_missing_block_hashes = original_request
+            .normal_fetch_hashes()
+            .iter()
+            .filter(|hash| missing_block_hashes.contains(hash))
+            .cloned()
+            .collect::<Vec<_>>();
         self.protocol
             .peers()
-            .mark_fetching_headers_missing(&missing_block_hashes);
+            .mark_fetching_headers_missing(&normal_missing_block_hashes);
+
+        for target in original_request.historical_targets() {
+            if missing_block_hashes.contains(&target.candidate_hash) {
+                self.protocol
+                    .peers()
+                    .mark_historical_header_proof_unavailable(
+                        target,
+                        self.peer_index,
+                        unix_time_as_millis(),
+                    );
+            }
+        }
 
         // Remove missing blocks from matched_blocks to prevent batch stall
         // This is safe because:

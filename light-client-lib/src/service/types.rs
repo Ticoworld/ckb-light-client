@@ -39,6 +39,55 @@ pub enum FetchStatus<T> {
     NotFound,
 }
 
+/// Opaque handle for a transient historical-header proof operation.
+///
+/// The handle is valid only for the light-client process that created it. It is not durable
+/// across restart.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct HistoricalHeaderProofRequest {
+    id: usize,
+}
+
+impl HistoricalHeaderProofRequest {
+    pub(crate) fn new(id: usize) -> Self {
+        Self { id }
+    }
+
+    pub(crate) fn id(&self) -> usize {
+        self.id
+    }
+}
+
+/// Progress and result for a transient historical-header proof operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistoricalHeaderProofStatus {
+    /// The candidate is queued for a proof request.
+    Added { timestamp: Uint64 },
+    /// The proof request has been sent and is still pending.
+    Fetching { first_sent: Uint64 },
+    /// Terminal: a peer did not provide the requested header, or the proved header had another
+    /// height. This is not a cryptographic proof of non-inclusion; issue a new request to retry.
+    Unavailable,
+    /// The accepted client tip changed while this request was pending.
+    StaleAnchor {
+        /// The tip hash captured when the request was created.
+        requested_anchor: H256,
+        /// The currently accepted tip hash.
+        current_anchor: H256,
+    },
+    /// The requested height and hash were proved against the captured accepted tip.
+    Verified {
+        /// The authenticated historical block height.
+        block_number: BlockNumber,
+        /// The authenticated block hash.
+        block_hash: H256,
+        /// The accepted tip hash against which the proof was verified.
+        anchor_hash: H256,
+    },
+    /// The transient operation exceeded its bounded lifetime or its handle is no longer known.
+    Expired,
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 pub struct ScriptStatus {
     pub script: Script,

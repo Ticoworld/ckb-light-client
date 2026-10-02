@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt, mem,
     num::NonZeroU32,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use ckb_network::PeerIndex;
@@ -27,12 +28,20 @@ use crate::{
 
 pub type BadMessageRateLimiter<T> = RateLimiter<T, DefaultKeyedStateStore<T>, DefaultClock>;
 
+// Match the existing one-hour retention used for missing fetched headers.
+pub(crate) const HISTORICAL_HEADER_PROOF_TTL_MS: u64 = 3_600_000;
+// Keep terminal results briefly available for callers polling after completion.
+const HISTORICAL_HEADER_PROOF_RESULT_RETENTION_MS: u64 = 300_000;
+static NEXT_HISTORICAL_HEADER_PROOF_ID: AtomicUsize = AtomicUsize::new(1);
+
 pub struct Peers {
     inner: DashMap<PeerIndex, Peer>,
     // The headers are fetching, the value is:
     fetching_headers: DashMap<Byte32, FetchInfo>,
     // The transactions are fetching, the value is:
     fetching_txs: DashMap<Byte32, FetchInfo>,
+    // Historical lookup provenance is transient and separate from generic fetch state.
+    historical_header_proofs: DashMap<usize, HistoricalHeaderProofInfo>,
 
     // The matched block filters to download, the key is the block hash, the value is:
     //   * if the block is proved
@@ -81,6 +90,39 @@ pub struct FetchInfo {
     timeout: bool,
     // whether the data to fetch is not on chain
     missing: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HistoricalHeaderProofTarget {
+    pub(crate) id: usize,
+    pub(crate) block_number: BlockNumber,
+    pub(crate) candidate_hash: Byte32,
+    pub(crate) anchor_hash: Byte32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum HistoricalHeaderProofState {
+    Pending,
+    InFlight {
+        peer_index: PeerIndex,
+        first_sent: u64,
+    },
+    ProofComplete {
+        completed_ts: u64,
+    },
+    Unavailable {
+        completed_ts: u64,
+    },
+    StaleAnchor {
+        completed_ts: u64,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HistoricalHeaderProofInfo {
+    pub(crate) target: HistoricalHeaderProofTarget,
+    pub(crate) created_ts: u64,
+    pub(crate) state: HistoricalHeaderProofState,
 }
 
 #[derive(Clone)]
@@ -165,6 +207,8 @@ pub(crate) struct BlocksProofRequest {
     content: packed::GetBlocksProof,
     when_sent: u64,
     should_get_blocks: bool,
+    normal_fetch_hashes: Vec<Byte32>,
+    historical_targets: Vec<HistoricalHeaderProofTarget>,
 }
 
 #[derive(Clone)]
@@ -395,11 +439,15 @@ impl BlocksProofRequest {
         content: packed::GetBlocksProof,
         when_sent: u64,
         should_get_blocks: bool,
+        normal_fetch_hashes: Vec<Byte32>,
+        historical_targets: Vec<HistoricalHeaderProofTarget>,
     ) -> Self {
         Self {
             content,
             when_sent,
             should_get_blocks,
+            normal_fetch_hashes,
+            historical_targets,
         }
     }
 
@@ -413,6 +461,14 @@ impl BlocksProofRequest {
             .into_iter()
             .map(|v| v.unpack())
             .collect()
+    }
+
+    pub(crate) fn historical_targets(&self) -> &[HistoricalHeaderProofTarget] {
+        &self.historical_targets
+    }
+
+    pub(crate) fn normal_fetch_hashes(&self) -> &[Byte32] {
+        &self.normal_fetch_hashes
     }
 
     pub(crate) fn check_block_hashes(
@@ -1136,6 +1192,7 @@ impl Peers {
             inner: Default::default(),
             fetching_headers: DashMap::new(),
             fetching_txs: DashMap::new(),
+            historical_header_proofs: DashMap::new(),
             matched_blocks: Default::default(),
             cached_block_filter_hashes: Default::default(),
             max_outbound_peers,
@@ -1228,6 +1285,193 @@ impl Peers {
         }
     }
 
+    pub(crate) fn add_historical_header_proof(
+        &self,
+        block_number: BlockNumber,
+        candidate_hash: Byte32,
+        anchor_hash: Byte32,
+        created_ts: u64,
+    ) -> usize {
+        let id = NEXT_HISTORICAL_HEADER_PROOF_ID.fetch_add(1, Ordering::Relaxed);
+        let target = HistoricalHeaderProofTarget {
+            id,
+            block_number,
+            candidate_hash,
+            anchor_hash,
+        };
+        self.historical_header_proofs.insert(
+            id,
+            HistoricalHeaderProofInfo {
+                target,
+                created_ts,
+                state: HistoricalHeaderProofState::Pending,
+            },
+        );
+        id
+    }
+
+    pub(crate) fn historical_header_proof(&self, id: usize) -> Option<HistoricalHeaderProofInfo> {
+        self.historical_header_proofs
+            .get(&id)
+            .map(|info| info.clone())
+    }
+
+    pub(crate) fn pending_historical_header_proofs(
+        &self,
+        anchor_hash: &Byte32,
+    ) -> Vec<HistoricalHeaderProofTarget> {
+        self.historical_header_proofs
+            .iter()
+            .filter_map(|entry| {
+                let info = entry.value();
+                (info.target.anchor_hash == *anchor_hash
+                    && matches!(&info.state, HistoricalHeaderProofState::Pending))
+                .then(|| info.target.clone())
+            })
+            .collect()
+    }
+
+    fn start_historical_header_proofs(
+        &self,
+        ids: &[usize],
+        block_hashes: &[H256],
+        anchor_hash: &Byte32,
+        peer_index: PeerIndex,
+        first_sent: u64,
+    ) -> Vec<HistoricalHeaderProofTarget> {
+        let requested_hashes: HashSet<Byte32> = block_hashes
+            .iter()
+            .map(|block_hash| block_hash.pack())
+            .collect();
+        let mut targets = Vec::new();
+        for id in ids {
+            if let Some(mut info) = self.historical_header_proofs.get_mut(id) {
+                if info.target.anchor_hash == *anchor_hash
+                    && requested_hashes.contains(&info.target.candidate_hash)
+                    && matches!(&info.state, HistoricalHeaderProofState::Pending)
+                {
+                    info.state = HistoricalHeaderProofState::InFlight {
+                        peer_index,
+                        first_sent,
+                    };
+                    targets.push(info.target.clone());
+                }
+            }
+        }
+        targets
+    }
+
+    fn reset_historical_header_proofs(
+        &self,
+        targets: &[HistoricalHeaderProofTarget],
+        peer_index: PeerIndex,
+    ) {
+        for target in targets {
+            if let Some(mut info) = self.historical_header_proofs.get_mut(&target.id) {
+                if matches!(
+                    &info.state,
+                    HistoricalHeaderProofState::InFlight {
+                        peer_index: active_peer,
+                        ..
+                    } if *active_peer == peer_index
+                ) {
+                    info.state = HistoricalHeaderProofState::Pending;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn complete_historical_header_proof(
+        &self,
+        target: &HistoricalHeaderProofTarget,
+        peer_index: PeerIndex,
+        now: u64,
+    ) -> bool {
+        if let Some(mut info) = self.historical_header_proofs.get_mut(&target.id) {
+            if info.target == *target
+                && matches!(
+                    &info.state,
+                    HistoricalHeaderProofState::InFlight {
+                        peer_index: active_peer,
+                        ..
+                    } if *active_peer == peer_index
+                )
+            {
+                info.state = HistoricalHeaderProofState::ProofComplete { completed_ts: now };
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn mark_historical_header_proof_unavailable(
+        &self,
+        target: &HistoricalHeaderProofTarget,
+        peer_index: PeerIndex,
+        now: u64,
+    ) -> bool {
+        if let Some(mut info) = self.historical_header_proofs.get_mut(&target.id) {
+            if info.target == *target
+                && matches!(
+                    &info.state,
+                    HistoricalHeaderProofState::InFlight {
+                        peer_index: active_peer,
+                        ..
+                    } if *active_peer == peer_index
+                )
+            {
+                info.state = HistoricalHeaderProofState::Unavailable { completed_ts: now };
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn mark_historical_header_proof_stale(&self, id: usize, now: u64) {
+        if let Some(mut info) = self.historical_header_proofs.get_mut(&id) {
+            let completed_ts = match &info.state {
+                HistoricalHeaderProofState::StaleAnchor { completed_ts, .. } => *completed_ts,
+                _ => now,
+            };
+            info.state = HistoricalHeaderProofState::StaleAnchor { completed_ts };
+        }
+    }
+
+    pub(crate) fn cleanup_historical_header_proofs(&self, current_anchor: &Byte32, now: u64) {
+        self.historical_header_proofs.retain(|_, info| {
+            let stale_since = match &info.state {
+                HistoricalHeaderProofState::StaleAnchor { completed_ts, .. } => Some(*completed_ts),
+                _ if info.target.anchor_hash != *current_anchor => Some(now),
+                _ => None,
+            };
+            if let Some(completed_ts) = stale_since {
+                info.state = HistoricalHeaderProofState::StaleAnchor { completed_ts };
+            }
+
+            let active_expired = !matches!(
+                &info.state,
+                HistoricalHeaderProofState::ProofComplete { .. }
+                    | HistoricalHeaderProofState::Unavailable { .. }
+                    | HistoricalHeaderProofState::StaleAnchor { .. }
+            ) && now.saturating_sub(info.created_ts)
+                >= HISTORICAL_HEADER_PROOF_TTL_MS;
+            if active_expired {
+                return false;
+            }
+
+            let terminal_ts = match &info.state {
+                HistoricalHeaderProofState::ProofComplete { completed_ts }
+                | HistoricalHeaderProofState::Unavailable { completed_ts }
+                | HistoricalHeaderProofState::StaleAnchor { completed_ts } => Some(*completed_ts),
+                HistoricalHeaderProofState::Pending
+                | HistoricalHeaderProofState::InFlight { .. } => None,
+            };
+            terminal_ts.is_none_or(|ts| {
+                now.saturating_sub(ts) <= HISTORICAL_HEADER_PROOF_RESULT_RETENTION_MS
+            })
+        });
+    }
+
     /// Clean up old missing entries from fetching_headers to prevent unbounded memory growth
     /// This is called periodically to remove uncle blocks that were marked as missing
     /// but are no longer needed (older than max_age_ms)
@@ -1257,11 +1501,12 @@ impl Peers {
     pub(crate) fn mark_fetching_headers_timeout(&self, peer_index: PeerIndex) {
         if let Some(peer) = self.get_peer(&peer_index) {
             if let Some(request) = peer.get_blocks_proof_request() {
-                for block_hash in request.block_hashes() {
-                    if let Some(mut pair) = self.fetching_headers.get_mut(&block_hash.pack()) {
+                for block_hash in request.normal_fetch_hashes() {
+                    if let Some(mut pair) = self.fetching_headers.get_mut(block_hash) {
                         pair.value_mut().timeout = true;
                     }
                 }
+                self.reset_historical_header_proofs(request.historical_targets(), peer_index);
             }
         }
     }
@@ -1597,11 +1842,58 @@ impl Peers {
         request: Option<packed::GetBlocksProof>,
         should_get_blocks: bool,
     ) {
-        if let Some(mut peer) = self.inner.get_mut(&index) {
-            peer.blocks_proof_request = request.map(|content| {
-                BlocksProofRequest::new(content, unix_time_as_millis(), should_get_blocks)
-            });
+        let normal_fetch_hashes = request
+            .as_ref()
+            .map(|content| content.block_hashes().into_iter().collect())
+            .unwrap_or_default();
+        self.update_blocks_proof_request_with_historical_targets(
+            index,
+            request,
+            should_get_blocks,
+            normal_fetch_hashes,
+            Vec::new(),
+        );
+    }
+
+    pub(crate) fn update_blocks_proof_request_with_historical_targets(
+        &self,
+        index: PeerIndex,
+        request: Option<packed::GetBlocksProof>,
+        should_get_blocks: bool,
+        normal_fetch_hashes: Vec<Byte32>,
+        historical_request_ids: Vec<usize>,
+    ) {
+        let Some(mut peer) = self.inner.get_mut(&index) else {
+            return;
+        };
+        if let Some(old_request) = &peer.blocks_proof_request {
+            self.reset_historical_header_proofs(old_request.historical_targets(), index);
         }
+
+        let now = unix_time_as_millis();
+        let new_request = request.map(|content| {
+            let anchor_hash = content.last_hash();
+            let block_hashes = content
+                .block_hashes()
+                .into_iter()
+                .map(|hash| hash.unpack())
+                .collect::<Vec<_>>();
+            let historical_targets = self.start_historical_header_proofs(
+                &historical_request_ids,
+                &block_hashes,
+                &anchor_hash,
+                index,
+                now,
+            );
+            BlocksProofRequest::new(
+                content,
+                now,
+                should_get_blocks,
+                normal_fetch_hashes,
+                historical_targets,
+            )
+        });
+        peer.blocks_proof_request = new_request;
     }
     pub(crate) fn update_blocks_request(&self, index: PeerIndex, hashes: Option<Vec<Byte32>>) {
         if let Some(mut peer) = self.inner.get_mut(&index) {
