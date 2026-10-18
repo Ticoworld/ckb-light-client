@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 
-await mkdir('chrome-probe-results');
+const output = process.argv[2] ?? 'chrome-probe-results';
+const expectSandbox = process.argv[3] === 'sandbox-available';
+await mkdir(output);
 const source = await readFile('wasm/light-client-js/tests/browser/run.mjs', 'utf8');
 const launch = source.match(/browser=spawn\(executable,(\[[\s\S]*?\]),\s*\{windowsHide/);
 if (!launch) throw new Error('Could not extract actual runner arguments');
@@ -18,7 +20,7 @@ for (const [name, extra] of [
   ['sandbox-only-repeat', ['--no-sandbox']],
 ]) {
   const profile = await mkdtemp(join(tmpdir(), 'ckb-chrome-probe-'));
-  const args = runInNewContext(`(${launch[1]})`, { profile });
+  const args = runInNewContext(`(${launch[1]})`, { profile, process: { env: {} } });
   args.splice(args.length - 1, 0, ...extra);
   const result = { name, args, executable: process.env.CHROME, stderr: '', endpoint: false };
   const child = spawn(process.env.CHROME, args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -40,12 +42,12 @@ for (const [name, extra] of [
   });
   results.push(result);
   console.log(JSON.stringify(result, null, 2));
-  await writeFile(`chrome-probe-results/${name}.json`, JSON.stringify(result, null, 2));
+  await writeFile(join(output, `${name}.json`), JSON.stringify(result, null, 2));
   await rm(profile, { recursive: true, force: true });
 }
 
 // Ask the same ChromeDriver binary to launch with wasm-bindgen 0.2.100's options.
-const driver = spawn(process.env.CHROMEDRIVER, ['--port=9515', '--verbose', '--log-path=chrome-probe-results/chromedriver.log'], { stdio: ['ignore', 'pipe', 'pipe'] });
+const driver = spawn(process.env.CHROMEDRIVER, ['--port=9515', '--verbose', `--log-path=${output}/chromedriver.log`], { stdio: ['ignore', 'pipe', 'pipe'] });
 let driverOutput = '';
 driver.stdout.on('data', c => { driverOutput += c; });
 driver.stderr.on('data', c => { driverOutput += c; });
@@ -63,13 +65,13 @@ try {
     } } } }),
   });
   const session = await response.json();
-  await writeFile('chrome-probe-results/chromedriver-session.json', JSON.stringify(session, null, 2));
+  await writeFile(join(output, 'chromedriver-session.json'), JSON.stringify(session, null, 2));
   if (!response.ok || !session.value?.sessionId) throw new Error(JSON.stringify(session));
   console.log('ChromeDriver session succeeded', session.value.capabilities.browserVersion);
   await fetch(`http://127.0.0.1:9515/session/${session.value.sessionId}`, { method: 'DELETE' });
 } finally { driver.kill(); }
 
 const summary = { chrome: execFileSync(process.env.CHROME, ['--version'], { encoding: 'utf8' }).trim(), results };
-await writeFile('chrome-probe-results/summary.json', JSON.stringify(summary, null, 2));
-if (results.filter(r => r.name.startsWith('baseline')).some(r => r.endpoint)) throw new Error('Original failure not reproduced');
+await writeFile(join(output, 'summary.json'), JSON.stringify(summary, null, 2));
+if (results.filter(r => r.name.startsWith('baseline')).some(r => r.endpoint !== expectSandbox)) throw new Error('Unexpected sandbox control result');
 if (results.filter(r => r.name.startsWith('sandbox-only')).some(r => !r.endpoint)) throw new Error('Sandbox-only control did not start');

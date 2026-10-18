@@ -4,10 +4,15 @@ on:
     branches: [ contribution-002-chrome-ci-validation ]
 permissions:
   contents: read
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: full
+  RUST_TOOLCHAIN: 1.95.0
 jobs:
-  reproduce-startup:
+  full-wasm-validation:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,20 +23,45 @@ jobs:
         with:
           chrome-version: 155.0.8059.84
           install-chromedriver: true
-      - name: Record environment
-        run: |
-          mkdir environment
-          { cat /etc/os-release; uname -a; id; df -h /dev/shm; sysctl kernel.apparmor_restrict_unprivileged_userns; ls -l "${{ steps.chrome.outputs.chrome-path }}"; } | tee environment/host.txt
-      - name: Compare exact launcher arguments and ChromeDriver
+      - name: Confirm AppArmor restriction independently
         env:
           CHROME: ${{ steps.chrome.outputs.chrome-path }}
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
-        run: node .github/chrome-launch-probe.mjs
+        run: |
+          original=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
+          test "$original" = 1
+          unshare -Ur true || true
+          trap 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$original"' EXIT
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          node .github/chrome-launch-probe.mjs chrome-policy-control sandbox-available
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.16.3
+      - name: Install dependencies
+        run: cargo binstall wasm-pack
+      - name: Check runner syntax
+        run: node --check wasm/light-client-js/tests/browser/run.mjs
+      - name: Build
+        run: make build-wasm
+      - name: Run unit-tests with wasm-pack
+        run: make test-wasm
+      - name: Run IndexedDB browser regressions
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+          CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
+          CHROME_NO_SANDBOX: '1'
+        run: |
+          node -e 'require("node:fs").writeFileSync("wasm/light-client-db-worker/webdriver.json", JSON.stringify({"goog:chromeOptions":{binary:process.env.CHROME}}))'
+          make test-wasm-browser
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: chrome-startup-evidence
-          path: |
-            chrome-probe-results
-            environment
+          name: full-wasm-browser-results
+          path: ckb-repro-*/result.json
+          # Source/build outputs are deliberately excluded.
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chrome-policy-control
+          path: chrome-policy-control
           retention-days: 14
