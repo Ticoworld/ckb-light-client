@@ -1,0 +1,37 @@
+name: Contribution 002 Chrome launch validation (fork only)
+on:
+  push:
+    branches: [ contribution-002-chrome-ci-validation ]
+permissions:
+  contents: read
+jobs:
+  reproduce-startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+        with:
+          chrome-version: 155.0.8059.84
+          install-chromedriver: true
+      - name: Record environment
+        run: |
+          mkdir environment
+          { cat /etc/os-release; uname -a; id; df -h /dev/shm; sysctl kernel.apparmor_restrict_unprivileged_userns; ls -l "${{ steps.chrome.outputs.chrome-path }}"; } | tee environment/host.txt
+      - name: Compare exact launcher arguments and ChromeDriver
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+          CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
+        run: node .github/chrome-launch-probe.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chrome-startup-evidence
+          path: |
+            chrome-probe-results
+            environment
+          retention-days: 14
