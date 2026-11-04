@@ -1,4 +1,5 @@
 use super::{BlocksProofRequest, TransactionsProofRequest};
+use crate::tests::utils::faketime;
 use crate::{
     protocols::{
         light_client::constant::REFRESH_PEERS_TOKEN, LastState, ProveRequest, ProveState,
@@ -8,7 +9,6 @@ use crate::{
     tests::utils::MockNetworkContext,
 };
 use ckb_network::{CKBProtocolHandler, PeerIndex};
-use ckb_systemtime::faketime;
 use ckb_types::{packed, prelude::*, utilities::merkle_mountain_range::VerifiableHeader};
 use std::sync::Arc;
 

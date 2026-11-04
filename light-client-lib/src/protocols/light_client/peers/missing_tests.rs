@@ -1,3 +1,4 @@
+use crate::tests::utils::faketime;
 use crate::{
     protocols::{FilterProtocol, SyncProtocol},
     storage::{LightClientStorage, Storage, StorageWithChainData},
@@ -5,7 +6,6 @@ use crate::{
 };
 use ckb_chain_spec::consensus::ConsensusBuilder;
 use ckb_network::{CKBProtocolHandler, PeerIndex};
-use ckb_systemtime::faketime;
 use ckb_types::{packed, prelude::*};
 use std::sync::Arc;
 

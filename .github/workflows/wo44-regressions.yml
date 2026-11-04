@@ -29,7 +29,7 @@ jobs:
           set -euo pipefail
           if [[ '${{ matrix.source }}' == baseline ]]; then
             git worktree add --detach ../wo44-baseline 1ff0db7dd4839ea30a0aa7d76c59f1f11d45de5e
-            for path in light-client-lib/src/tests/protocols/block_filter.rs light-client-lib/src/storage/canonical/recovery_tests.rs light-client-lib/src/storage/canonical/wo44_tests.rs light-client-lib/src/protocols/light_client/peers/recovery_tests.rs light-client-lib/src/protocols/light_client/peers/wo44_tests.rs; do
+            for path in light-client-lib/src/tests/utils/mod.rs light-client-lib/src/tests/protocols/block_filter.rs light-client-lib/src/storage/canonical/recovery_tests.rs light-client-lib/src/storage/canonical/wo44_tests.rs light-client-lib/src/protocols/light_client/peers/recovery_tests.rs light-client-lib/src/protocols/light_client/peers/wo44_tests.rs; do
               cp "$path" "../wo44-baseline/$path"
             done
             echo "WO44_SOURCE=$GITHUB_WORKSPACE/../wo44-baseline" >> "$GITHUB_ENV"
