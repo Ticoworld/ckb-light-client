@@ -514,6 +514,7 @@ impl LightClientProtocol {
 
     async fn refresh_all_peers(&mut self, nc: &BoxedCKBProtocolContext) {
         let now = unix_time_as_millis();
+        self.peers().expire_hinted_proof_requests(now);
         for peer_index in self.peers().get_peers_which_have_timeout(now) {
             self.peers().mark_fetching_headers_timeout(peer_index);
             self.peers().mark_fetching_txs_timeout(peer_index);

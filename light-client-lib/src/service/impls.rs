@@ -365,21 +365,16 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
         let filter_script_clone = filter_script.clone();
 
         let error_clone = query_error.clone();
-        let cache_clone = query_cache.clone();
         let filter_map_fn = Box::new(move |key: &[u8], value: &[u8]| -> Option<Vec<u8>> {
-            let tx_hash = query_hash(value, &error_clone)?;
             let block_number =
                 u64::from_be_bytes(key[key.len() - 17..key.len() - 9].try_into().ok()?);
             let tx_index = u32::from_be_bytes(key[key.len() - 9..key.len() - 5].try_into().ok()?);
             let io_index = u32::from_be_bytes(key[key.len() - 5..key.len() - 1].try_into().ok()?);
-            query_transaction(
-                storage_clone.as_ref(),
-                &tx_hash,
-                block_number,
-                tx_index,
-                &cache_clone,
-                &error_clone,
-            )?;
+            if let Some([r0, r1]) = filter_block_range {
+                if block_number < r0 || block_number >= r1 {
+                    return None;
+                }
+            }
             let io_type = if *key.last()? == 0 {
                 crate::storage::CellType::Input
             } else {
@@ -399,6 +394,9 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
                             )
                             .into_vec(),
                         )
+                        .map_err(|error| {
+                            *error_clone.lock().expect("query error lock") = Some(error)
+                        })
                         .ok()?
                         .is_some(),
                     ScriptType::Type => storage_clone
@@ -412,17 +410,14 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
                             )
                             .into_vec(),
                         )
+                        .map_err(|error| {
+                            *error_clone.lock().expect("query error lock") = Some(error)
+                        })
                         .ok()?
                         .is_some(),
                 };
 
                 if !filter_script_matched {
-                    return None;
-                }
-            }
-
-            if let Some([r0, r1]) = filter_block_range {
-                if block_number < r0 || block_number >= r1 {
                     return None;
                 }
             }

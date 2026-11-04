@@ -6,7 +6,7 @@ name: CI
 # rocksdb is bumped to a version that builds with GCC 15.
 on:
   push:
-    branches: [ master, develop ]
+    branches: [ master, develop, wo44/pr302-critical-review ]
   pull_request:
     branches: [ master, develop ]
   workflow_dispatch: 

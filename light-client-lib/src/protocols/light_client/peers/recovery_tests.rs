@@ -18,6 +18,9 @@ use request_fixture::{Fixture, Kind, KINDS};
 
 const START: u64 = 100_000;
 
+#[path = "wo44_tests.rs"]
+mod wo44_tests;
+
 #[path = "maintainer_tests.rs"]
 mod maintainer_tests;
 

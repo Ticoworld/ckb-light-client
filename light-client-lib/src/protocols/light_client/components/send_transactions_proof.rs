@@ -107,7 +107,10 @@ impl<'a> SendTransactionsProofProcess<'a> {
                 return_if_failed!(self
                     .protocol
                     .process_last_state(self.peer_index, last_header));
-                // This hint carries no request identity; an accepted reorg retires old anchors.
+                original_request
+                    .uncorrelated_hint
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                // Retain ownership until its deadline; a hint grants leniency only.
                 return Status::ok();
             } else {
                 // Since the last state is different, then no data should be contained.

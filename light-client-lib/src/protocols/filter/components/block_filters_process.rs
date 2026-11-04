@@ -290,6 +290,15 @@ impl<'a> BlockFiltersProcess<'a> {
         ) {
             return StatusCode::InternalError.with_context(error.to_string());
         }
+        match coverage::prepare(&self.filter.storage) {
+            Ok(true) => {
+                self.filter.peers.clear_matched_blocks(&mut matched_blocks);
+                return StatusCode::Ignore
+                    .with_context("obsolete matched range scheduled for recheck");
+            }
+            Ok(false) => {}
+            Err(error) => return StatusCode::InternalError.with_context(error.to_string()),
+        }
         let option = match restore_matched_cache(
             &self.filter.storage,
             &self.filter.peers,
@@ -301,11 +310,20 @@ impl<'a> BlockFiltersProcess<'a> {
         if possible_match_blocks_len != 0 {
             if option {
                 if let Some(db_matched_blocks) = self.filter.storage.get_earliest_matched_blocks() {
-                    self.filter.peers.add_matched_blocks(
-                        &mut matched_blocks,
-                        coverage::restorable_blocks(&self.filter.storage, &db_matched_blocks)
-                            .expect("restore verified positions"),
-                    );
+                    let blocks =
+                        match coverage::cached_matches(&self.filter.storage, &db_matched_blocks) {
+                            Ok(Some(blocks)) => blocks,
+                            Ok(None) => {
+                                return StatusCode::Ignore
+                                    .with_context("obsolete matched range awaits recheck")
+                            }
+                            Err(error) => {
+                                return StatusCode::InternalError.with_context(error.to_string())
+                            }
+                        };
+                    self.filter
+                        .peers
+                        .add_matched_blocks(&mut matched_blocks, blocks);
                     prove_or_download_matched_blocks(
                         Arc::clone(&self.filter.peers),
                         &tip_header,

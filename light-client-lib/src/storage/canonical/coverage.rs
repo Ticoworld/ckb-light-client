@@ -175,6 +175,13 @@ pub(crate) fn recheck<S: LightClientStorage + ?Sized>(storage: &S, start: u64) -
         // Legacy/changed partially indexed rows cannot be repaired by a reproof.
         return recovery::repair_ambiguous_index(storage);
     }
+    if range
+        .positions
+        .as_ref()
+        .is_some_and(|positions| positions.recheck)
+    {
+        return Ok(());
+    }
     recovery::save_recheck_targets(storage)?;
     if let Some(p) = &mut range.positions {
         p.recheck = true;
@@ -222,6 +229,80 @@ pub(crate) fn prepare<S: LightClientStorage + ?Sized>(storage: &S) -> Result<boo
     if !current(storage, first.start_number, &range)? {
         recheck(storage, first.start_number)?;
         return Ok(true);
+    }
+    Ok(false)
+}
+
+// Carry only pending expectations across a proven linear acceptance. This is
+// committed with LAST_STATE, so reopening cannot observe an anchor from a
+// different acceptance. Forks and unknown continuity do not carry expectations.
+pub(super) fn advance_anchors<S: StorageBackend + ?Sized>(
+    storage: &S,
+    batch: &mut S::Batch,
+    tip: &packed::Header,
+) -> Result<()> {
+    let prefix = meta(super::super::MATCHED_FILTER_BLOCKS_KEY);
+    let select = prefix.clone();
+    for row in storage.try_collect_iterator(
+        IteratorStart::From(prefix.clone()),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        usize::MAX,
+    )? {
+        let start = row
+            .key
+            .get(prefix.len()..)
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_be_bytes)
+            .ok_or_else(|| Error::runtime("invalid coverage key"))?;
+        let mut range = decode(&row.value)?;
+        if current(storage, start, &range)? {
+            range.positions.as_mut().expect("current positions").anchor = tip.as_slice().to_vec();
+            batch.put(&row.key, &encode(&range)?);
+        }
+    }
+    Ok(())
+}
+
+/// Pending work above every published cursor cannot change existing query rows.
+/// Rewound work and recovery remain fenced independently.
+pub(crate) fn affects_index<S: StorageBackend + ?Sized>(storage: &S) -> Result<bool> {
+    let scripts = meta(super::super::FILTER_SCRIPTS_KEY);
+    let select = scripts.clone();
+    let mut cursor = 0;
+    for row in storage.try_collect_iterator(
+        IteratorStart::From(scripts),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        usize::MAX,
+    )? {
+        let number = row
+            .value
+            .as_slice()
+            .try_into()
+            .map(u64::from_be_bytes)
+            .map_err(|_| Error::runtime("invalid watched cursor"))?;
+        cursor = cursor.max(number);
+    }
+    let prefix = meta(super::super::MATCHED_FILTER_BLOCKS_KEY);
+    let select = prefix.clone();
+    let rows = storage.try_collect_iterator(
+        IteratorStart::From(prefix.clone()),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        1,
+    )?;
+    if let Some(row) = rows.first() {
+        let start = row
+            .key
+            .get(prefix.len()..)
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_be_bytes)
+            .ok_or_else(|| Error::runtime("invalid coverage key"))?;
+        return Ok(start <= cursor);
     }
     Ok(false)
 }
@@ -321,7 +402,10 @@ pub(crate) fn check_headers<S: LightClientStorage + ?Sized>(
         return Ok(true);
     };
     let range = load(storage, first.start_number)?;
-    let mut valid = current(storage, first.start_number, &range)?;
+    if !current(storage, first.start_number, &range)? {
+        return Ok(false);
+    }
+    let mut valid = true;
     if let Some(p) = &range.positions {
         valid &= headers.iter().all(|h| {
             p.matches.iter().any(|(n, hash, _)| {

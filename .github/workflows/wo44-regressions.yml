@@ -1,0 +1,65 @@
+name: WO44 baseline and correction
+on:
+  push:
+    branches: [wo44/pr302-critical-review]
+permissions:
+  contents: read
+jobs:
+  regressions:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [baseline, correction]
+        backend: [rocksdb, sqlite]
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select production source and identical regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ '${{ matrix.source }}' == baseline ]]; then
+            git worktree add --detach ../wo44-baseline 1ff0db7dd4839ea30a0aa7d76c59f1f11d45de5e
+            for path in light-client-lib/src/tests/protocols/block_filter.rs light-client-lib/src/storage/canonical/recovery_tests.rs light-client-lib/src/storage/canonical/wo44_tests.rs light-client-lib/src/protocols/light_client/peers/recovery_tests.rs light-client-lib/src/protocols/light_client/peers/wo44_tests.rs; do
+              cp "$path" "../wo44-baseline/$path"
+            done
+            echo "WO44_SOURCE=$GITHUB_WORKSPACE/../wo44-baseline" >> "$GITHUB_ENV"
+          else
+            echo "WO44_SOURCE=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          fi
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Run real-backend regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          cd "$WO44_SOURCE"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/evidence/source.txt"
+          git diff --binary > "$GITHUB_WORKSPACE/evidence/test-overlay.patch"
+          flags=()
+          if [[ '${{ matrix.backend }}' == sqlite ]]; then flags+=(--features sqlite); fi
+          set +e
+          cargo +1.95.0 test --locked -p ckb-light-client-lib --lib "${flags[@]}" wo44_ -- --nocapture --test-threads=1 2>&1 | tee "$GITHUB_WORKSPACE/evidence/regressions.log"
+          result=${PIPESTATUS[0]}
+          set -e
+          echo "$result" > "$GITHUB_WORKSPACE/evidence/exit-code.txt"
+          if [[ '${{ matrix.source }}' == baseline ]]; then
+            test "$result" = 101
+            grep -q 'test result: FAILED' "$GITHUB_WORKSPACE/evidence/regressions.log"
+          else
+            test "$result" = 0
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wo44-${{ matrix.source }}-${{ matrix.backend }}
+          path: evidence/

@@ -1,4 +1,6 @@
 //! Failure boundaries use real backend batches and reopen the preserved database.
+#[path = "wo44_tests.rs"]
+mod wo44_tests;
 use super::*;
 use crate::storage::{FilterMapFn, KVPair, Storage, TakeWhileFn};
 use ckb_chain_spec::consensus::ConsensusBuilder;

@@ -155,6 +155,8 @@ pub(crate) fn update_state<S: StorageBackend + ?Sized>(
     } else if uncertain {
         invalidate(storage, &mut batch, 1)?;
         batch.put(&meta(INDEX_UNCERTAIN), &[1]);
+    } else {
+        coverage::advance_anchors(storage, &mut batch, tip)?;
     }
     super::storage_trait::write_last_state(&mut batch, work, tip, recent);
     batch.put(&meta(CONTEXT), tip.calc_header_hash().as_slice());
@@ -437,7 +439,7 @@ pub(crate) fn index_ready<S: StorageBackend + ?Sized>(storage: &S) -> Result<()>
 }
 pub(crate) fn query_context<S: StorageBackend + ?Sized>(storage: &S) -> Result<Vec<u8>> {
     index_ready(storage)?;
-    if coverage::pending(storage)? || recovery::repair_pending(storage)? {
+    if coverage::affects_index(storage)? || recovery::repair_pending(storage)? {
         return Err(Error::runtime(
             "canonical_state:repair_pending: watched coverage is being reindexed in place",
         ));
