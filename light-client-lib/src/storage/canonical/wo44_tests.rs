@@ -2,6 +2,50 @@ use super::*;
 use crate::storage::canonical::coverage;
 
 #[test]
+fn wo44_pending_anchor_carry_and_acceptance_are_one_atomic_commit() {
+    for after in [false, true] {
+        let (directory, storage, blocks) = positional_fixture();
+        let revision = coverage::scripts_revision(&storage).unwrap();
+        coverage::save_filters(&storage, 1, 1, vec![(1, blocks[0].hash())], revision).unwrap();
+        let old = storage.get_tip_header().into_view();
+        let next = old
+            .clone()
+            .as_advanced_builder()
+            .number(7u64)
+            .parent_hash(old.hash())
+            .epoch(core::EpochNumberWithFraction::new(0, 7, 1000))
+            .build();
+        let fault = Fault {
+            storage: storage.clone(),
+            prefix: meta(LAST_STATE_KEY),
+            after,
+            fired: Arc::new(AtomicBool::new(false)),
+        };
+        assert!(update_state(
+            &fault,
+            &U256::from(8u64),
+            &next.data(),
+            &[old.clone()],
+            None
+        )
+        .is_err());
+        assert!(fault.fired.load(Ordering::SeqCst));
+        drop(fault);
+        drop(storage);
+        let storage = Storage::new(directory.path());
+        assert_eq!(
+            storage.get_tip_header().calc_header_hash(),
+            if after { next.hash() } else { old.hash() }
+        );
+        let range = storage.get_earliest_matched_blocks().unwrap();
+        assert!(coverage::cached_matches(&storage, &range)
+            .unwrap()
+            .is_some());
+        assert!(!coverage::prepare(&storage).unwrap());
+    }
+}
+
+#[test]
 fn wo44_rechecked_inflight_headers_are_local_staleness_not_bad_proof() {
     let (_directory, storage, blocks) = positional_fixture();
     let revision = coverage::scripts_revision(&storage).unwrap();
