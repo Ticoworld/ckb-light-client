@@ -81,6 +81,17 @@ jobs:
             export WO29_LEGACY_DB="$WO29_LEGACY_DB/positional-release-physical-upgrades-sqlite"
           fi
           cargo +1.95.0 test --locked -p ckb-light-client-lib --test canonical_status "${flags[@]}" recovery_upgrade_physical_legacy_wallet -- --ignored --exact --nocapture 2>&1 | tee evidence/historical-upgrade.log
+      - name: Install existing nextest runner
+        if: matrix.source == 'correction'
+        uses: taiki-e/install-action@nextest
+      - name: Reuse focused target for all library and integration tests
+        if: matrix.source == 'correction'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ '${{ matrix.backend }}' == sqlite ]]; then flags+=(--features sqlite); fi
+          cargo +1.95.0 nextest run --locked -p ckb-light-client-lib "${flags[@]}" --no-fail-fast --test-threads 4 --success-output immediate --failure-output immediate 2>&1 | tee evidence/full-library.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
