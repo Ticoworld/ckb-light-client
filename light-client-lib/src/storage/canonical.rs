@@ -145,6 +145,11 @@ pub(crate) fn update_state<S: StorageBackend + ?Sized>(
         && fork.is_none();
     let mut batch = storage.batch();
     if let Some(fork) = fork {
+        // The continuity-proof path supplies the exact previous tip as its
+        // retained prefix. It is a proven extension even beyond the window.
+        if !interrupted && previous.as_ref().is_some_and(|old| fork == old.number()) {
+            coverage::advance_anchors(storage, &mut batch, tip)?;
+        }
         invalidate(storage, &mut batch, fork.saturating_add(1))?;
         if storage.get(meta(INDEX_WRITING))?.is_some()
             && previous.as_ref().is_some_and(|old| fork < old.number())

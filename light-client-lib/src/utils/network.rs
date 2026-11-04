@@ -14,7 +14,7 @@ pub(crate) fn restore_matched_cache(
     peers: &Peers,
     matched: &mut HashMap<H256, (bool, Option<packed::Block>)>,
 ) -> crate::error::Result<bool> {
-    let Some(range) = storage.get_earliest_matched_blocks() else {
+    let Some(range) = canonical::coverage::earliest(storage)? else {
         let changed = !matched.is_empty();
         peers.clear_matched_blocks(matched);
         return Ok(changed);

@@ -58,6 +58,28 @@ jobs:
           else
             test "$result" = 0
           fi
+      - name: Upgrade a pristine WO29 historical-writer database and reopen
+        if: matrix.source == 'correction'
+        shell: bash
+        run: |
+          set -euo pipefail
+          backend='${{ matrix.backend }}'
+          fixture="light-client-lib/tests/fixtures/wo29/$backend-pristine.zip"
+          if [[ "$backend" == rocksdb ]]; then
+            expected=fcf1d192e890b474f630774e0188dcd1f5dd2c4cf9c55fa175d6a806d08ffcbd
+          else
+            expected=1a95c27610aa2fa71e79d5d6ba046fcb4ff2a2d6cbe3078c405dac4b5342b65f
+          fi
+          echo "$expected  $fixture" | sha256sum --check | tee evidence/fixture-hash.log
+          mkdir "$RUNNER_TEMP/wo44-legacy"
+          unzip -q "$fixture" -d "$RUNNER_TEMP/wo44-legacy"
+          export WO29_LEGACY_DB="$RUNNER_TEMP/wo44-legacy"
+          flags=()
+          if [[ "$backend" == sqlite ]]; then
+            flags+=(--features sqlite)
+            export WO29_LEGACY_DB="$WO29_LEGACY_DB/positional-release-physical-upgrades-sqlite"
+          fi
+          cargo +1.95.0 test --locked -p ckb-light-client-lib --test canonical_status "${flags[@]}" recovery_upgrade_physical_legacy_wallet -- --ignored --exact --nocapture 2>&1 | tee evidence/historical-upgrade.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -221,8 +221,44 @@ pub(crate) fn recheck<S: LightClientStorage + ?Sized>(storage: &S, start: u64) -
     bump_revision(storage, &mut batch)?;
     batch.commit()
 }
+pub(crate) fn earliest<S: StorageBackend + ?Sized>(
+    storage: &S,
+) -> Result<Option<crate::storage::MatchedBlocks>> {
+    let prefix = meta(super::super::MATCHED_FILTER_BLOCKS_KEY);
+    let select = prefix.clone();
+    let rows = storage.try_collect_iterator(
+        IteratorStart::From(prefix.clone()),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        1,
+    )?;
+    rows.into_iter()
+        .next()
+        .map(|row| {
+            let start = row
+                .key
+                .get(prefix.len()..)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u64::from_be_bytes)
+                .ok_or_else(|| Error::runtime("invalid coverage key"))?;
+            let range = decode(&row.value)?;
+            bounds(start, range.count)?;
+            Ok(crate::storage::MatchedBlocks {
+                start_number: start,
+                blocks_count: range.count,
+                blocks: range
+                    .blocks
+                    .into_iter()
+                    .map(|(hash, proved)| crate::storage::MatchedBlock { hash, proved })
+                    .collect(),
+            })
+        })
+        .transpose()
+}
+
 pub(crate) fn prepare<S: LightClientStorage + ?Sized>(storage: &S) -> Result<bool> {
-    let Some(first) = storage.get_earliest_matched_blocks() else {
+    let Some(first) = earliest(storage)? else {
         return Ok(false);
     };
     let range = load(storage, first.start_number)?;
@@ -408,7 +444,7 @@ pub(crate) fn check_headers<S: LightClientStorage + ?Sized>(
     storage: &S,
     headers: &[HeaderView],
 ) -> std::result::Result<bool, HeaderCheckError> {
-    let Some(first) = storage.get_earliest_matched_blocks() else {
+    let Some(first) = earliest(storage)? else {
         return Ok(true);
     };
     let range = load(storage, first.start_number)?;

@@ -71,7 +71,26 @@ fn wo44_pending_anchor_survives_150_linear_acceptances_reopen_but_not_fork() {
         .unwrap()
         .is_some());
     assert!(!coverage::prepare(&storage).unwrap());
-    let competing = tip.as_advanced_builder().nonce(1234u128).build();
+    let bridged = tip
+        .clone()
+        .as_advanced_builder()
+        .number(350u64)
+        .epoch(core::EpochNumberWithFraction::new(0, 350, 1000))
+        .build();
+    // Storage-boundary trusted fixture: production proves the exact old tip
+    // under the new MMR root before supplying this retained prefix.
+    update_state(
+        &storage,
+        &U256::from(400u64),
+        &bridged.data(),
+        &[],
+        Some(tip.number()),
+    )
+    .unwrap();
+    assert!(coverage::cached_matches(&storage, &range)
+        .unwrap()
+        .is_some());
+    let competing = bridged.as_advanced_builder().nonce(1234u128).build();
     update_state(
         &storage,
         &U256::from(1000u64),
@@ -126,6 +145,7 @@ fn wo44_legacy_cursor_is_not_a_birth_or_complete_membership_certificate() {
 struct Reads {
     storage: Storage,
     reads: Arc<std::sync::atomic::AtomicUsize>,
+    fail_scan: bool,
 }
 impl StorageBackend for Reads {
     type Batch = <Storage as StorageBackend>::Batch;
@@ -165,6 +185,9 @@ impl StorageBackend for Reads {
         filter: FilterMapFn,
         limit: usize,
     ) -> Result<Vec<KVPair>> {
+        if self.fail_scan {
+            return Err(Error::runtime("WO44 injected pending-range scan failure"));
+        }
         self.storage
             .try_collect_iterator(start, direction, take, filter, limit)
     }
@@ -190,6 +213,7 @@ fn wo44_history_page_does_not_validate_2000_irrelevant_tail_transactions() {
     let service = LightClientService::new(Arc::new(Reads {
         storage,
         reads: reads.clone(),
+        fail_scan: false,
     }));
     let key = || SearchKey {
         script: script.clone().into(),
@@ -216,4 +240,17 @@ fn wo44_history_page_does_not_validate_2000_irrelevant_tail_transactions() {
             "invalid returned row must still fail"
         );
     }
+}
+
+#[test]
+fn wo44_pending_range_scan_failure_propagates_without_panicking() {
+    let (_directory, storage, _) = positional_fixture();
+    let before = snapshot_target_rows(&storage);
+    let fault = Reads {
+        storage: storage.clone(),
+        reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        fail_scan: true,
+    };
+    assert!(coverage::prepare(&fault).is_err());
+    assert_eq!(snapshot_target_rows(&storage), before);
 }

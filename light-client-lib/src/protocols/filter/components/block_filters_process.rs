@@ -85,7 +85,11 @@ impl<'a> BlockFiltersProcess<'a> {
                 min_filtered_block_number
             );
             // Get matched blocks finished, update filter scripts block number
-            if self.filter.storage.get_earliest_matched_blocks().is_none() {
+            let earliest = match coverage::earliest(&self.filter.storage) {
+                Ok(range) => range,
+                Err(error) => return StatusCode::InternalError.with_context(error.to_string()),
+            };
+            if earliest.is_none() {
                 self.filter
                     .storage
                     .update_block_number(min_filtered_block_number);
@@ -307,9 +311,13 @@ impl<'a> BlockFiltersProcess<'a> {
             Ok(restored) => restored,
             Err(error) => return StatusCode::InternalError.with_context(error.to_string()),
         };
+        let earliest = match coverage::earliest(&self.filter.storage) {
+            Ok(range) => range,
+            Err(error) => return StatusCode::InternalError.with_context(error.to_string()),
+        };
         if possible_match_blocks_len != 0 {
             if option {
-                if let Some(db_matched_blocks) = self.filter.storage.get_earliest_matched_blocks() {
+                if let Some(db_matched_blocks) = earliest {
                     let blocks =
                         match coverage::cached_matches(&self.filter.storage, &db_matched_blocks) {
                             Ok(Some(blocks)) => blocks,
@@ -333,7 +341,7 @@ impl<'a> BlockFiltersProcess<'a> {
                     );
                 }
             }
-        } else if self.filter.storage.get_earliest_matched_blocks().is_none() {
+        } else if earliest.is_none() {
             // A lost completion acknowledgement may leave an old in-memory
             // batch. It is a cache, not another coverage obligation. A checked
             // no-match page can finish once the durable pending set is empty.
