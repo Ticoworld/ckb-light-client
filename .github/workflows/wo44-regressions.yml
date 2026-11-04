@@ -18,6 +18,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       RUST_BACKTRACE: '1'
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
         with:

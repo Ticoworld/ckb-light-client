@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn wo44_valid_inflight_proof_after_recheck_is_not_penalized_or_stranded() {
-    use crate::storage::{canonical::coverage, Key, StorageBackend};
+    use crate::storage::{canonical::coverage, Key};
     let clock = faketime();
     clock.set_faketime(START);
     let mut f = Fixture::new();
