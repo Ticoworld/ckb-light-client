@@ -2,6 +2,21 @@ use super::*;
 use crate::storage::canonical::coverage;
 
 #[test]
+fn wo44_ambiguous_tail_behind_current_forward_range_stays_fenced() {
+    let (_directory, storage, blocks) = positional_fixture();
+    replay_target_page(&storage, 1, 1, &blocks[..1]);
+    let revision = coverage::scripts_revision(&storage).unwrap();
+    coverage::save_filters(&storage, 2, 1, vec![(2, blocks[1].hash())], revision).unwrap();
+    assert_eq!(positional_capacity(&storage).unwrap(), 100);
+    storage.add_matched_blocks(3, 1, vec![(blocks[2].hash(), false)]);
+    assert!(
+        query_context(&storage).is_err(),
+        "an ambiguous tail is not certified forward work"
+    );
+    assert!(positional_capacity(&storage).is_err());
+}
+
+#[test]
 fn wo44_pending_anchor_carry_and_acceptance_are_one_atomic_commit() {
     for after in [false, true] {
         let (directory, storage, blocks) = positional_fixture();

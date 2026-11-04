@@ -301,8 +301,8 @@ pub(super) fn advance_anchors<S: StorageBackend + ?Sized>(
     Ok(())
 }
 
-/// Pending work above every published cursor cannot change existing query rows.
-/// Rewound work and recovery remain fenced independently.
+/// Only current positioned work above every published cursor is forward work.
+/// Any legacy/obsolete range (including a later tail) may hide incomplete rows.
 pub(crate) fn affects_index<S: StorageBackend + ?Sized>(storage: &S) -> Result<bool> {
     if !pending(storage)? {
         return Ok(false);
@@ -332,16 +332,18 @@ pub(crate) fn affects_index<S: StorageBackend + ?Sized>(storage: &S) -> Result<b
         IteratorDirection::Forward,
         Box::new(move |key| key.starts_with(&select)),
         Box::new(|_, value| Some(value.to_vec())),
-        1,
+        usize::MAX,
     )?;
-    if let Some(row) = rows.first() {
+    for row in rows {
         let start = row
             .key
             .get(prefix.len()..)
             .and_then(|b| b.try_into().ok())
             .map(u64::from_be_bytes)
             .ok_or_else(|| Error::runtime("invalid coverage key"))?;
-        return Ok(start <= cursor);
+        if start <= cursor || !current(storage, start, &decode(&row.value)?)? {
+            return Ok(true);
+        }
     }
     Ok(false)
 }
