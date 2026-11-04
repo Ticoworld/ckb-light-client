@@ -268,6 +268,9 @@ pub(super) fn advance_anchors<S: StorageBackend + ?Sized>(
 /// Pending work above every published cursor cannot change existing query rows.
 /// Rewound work and recovery remain fenced independently.
 pub(crate) fn affects_index<S: StorageBackend + ?Sized>(storage: &S) -> Result<bool> {
+    if !pending(storage)? {
+        return Ok(false);
+    }
     let scripts = meta(super::super::FILTER_SCRIPTS_KEY);
     let select = scripts.clone();
     let mut cursor = 0;
@@ -394,10 +397,17 @@ pub(crate) fn save_filters<S: LightClientStorage + ?Sized>(
 
 /// Authenticate the header first (PoW/MMR), then check the saved expectation.
 /// A mismatched proof must not install membership or watched-state provenance.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HeaderCheckError {
+    #[error(transparent)]
+    Storage(#[from] Error),
+    #[error("proof does not match saved filter positions; refilter required")]
+    Mismatch,
+}
 pub(crate) fn check_headers<S: LightClientStorage + ?Sized>(
     storage: &S,
     headers: &[HeaderView],
-) -> Result<bool> {
+) -> std::result::Result<bool, HeaderCheckError> {
     let Some(first) = storage.get_earliest_matched_blocks() else {
         return Ok(true);
     };
@@ -417,9 +427,7 @@ pub(crate) fn check_headers<S: LightClientStorage + ?Sized>(
     }
     if !valid {
         recheck(storage, first.start_number)?;
-        return Err(Error::runtime(
-            "proof does not match saved filter positions; refilter required",
-        ));
+        return Err(HeaderCheckError::Mismatch);
     }
     Ok(true)
 }
@@ -432,7 +440,7 @@ pub(crate) fn check_bodies<S: LightClientStorage + ?Sized>(
         .ok_or_else(|| Error::runtime("missing coverage"))?;
     let range = load(storage, first.start_number)?;
     let headers: Vec<_> = blocks.iter().map(|b| b.header().into_view()).collect();
-    if !check_headers(storage, &headers)? {
+    if !check_headers(storage, &headers).map_err(|error| Error::runtime(error.to_string()))? {
         return Err(Error::runtime("obsolete coverage bodies"));
     }
     let p = range

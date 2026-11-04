@@ -280,7 +280,14 @@ impl<'a> SendBlocksProofProcess<'a> {
                         self.protocol
                             .peers()
                             .clear_matched_blocks(&mut matched_blocks);
-                        return StatusCode::InvalidProof.with_context(error.to_string());
+                        return match error {
+                            crate::storage::canonical::coverage::HeaderCheckError::Mismatch => {
+                                StatusCode::InvalidProof.with_context(error.to_string())
+                            }
+                            crate::storage::canonical::coverage::HeaderCheckError::Storage(
+                                error,
+                            ) => StatusCode::InternalError.with_context(error.to_string()),
+                        };
                     }
                 }
             }

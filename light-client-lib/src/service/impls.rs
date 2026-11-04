@@ -443,7 +443,8 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
                 let key = kv_pair.key;
                 let value = kv_pair.value;
 
-                let tx_hash = packed::Byte32::from_slice(&value).ok().unwrap();
+                let tx_hash = packed::Byte32::from_slice(&value)
+                    .map_err(|_| Error::runtime("invalid watched transaction hash"))?;
 
                 if tx_with_cells.len() == limit
                     && tx_with_cells.last().unwrap().transaction.hash != tx_hash.unpack()
