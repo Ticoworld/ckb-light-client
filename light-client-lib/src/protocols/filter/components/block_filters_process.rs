@@ -294,14 +294,16 @@ impl<'a> BlockFiltersProcess<'a> {
         ) {
             return StatusCode::InternalError.with_context(error.to_string());
         }
-        match coverage::prepare(&self.filter.storage) {
-            Ok(true) => {
-                self.filter.peers.clear_matched_blocks(&mut matched_blocks);
-                return StatusCode::Ignore
-                    .with_context("obsolete matched range scheduled for recheck");
+        if possible_match_blocks_len != 0 {
+            match coverage::prepare(&self.filter.storage) {
+                Ok(true) => {
+                    self.filter.peers.clear_matched_blocks(&mut matched_blocks);
+                    return StatusCode::Ignore
+                        .with_context("obsolete matched range scheduled for recheck");
+                }
+                Ok(false) => {}
+                Err(error) => return StatusCode::InternalError.with_context(error.to_string()),
             }
-            Ok(false) => {}
-            Err(error) => return StatusCode::InternalError.with_context(error.to_string()),
         }
         let option = match restore_matched_cache(
             &self.filter.storage,
