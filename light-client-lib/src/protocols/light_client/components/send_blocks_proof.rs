@@ -275,7 +275,19 @@ impl<'a> SendBlocksProofProcess<'a> {
                     &headers,
                 ) {
                     Ok(true) => {}
-                    Ok(false) => return Status::ok(),
+                    Ok(false) => {
+                        self.protocol
+                            .peers()
+                            .clear_matched_blocks(&mut matched_blocks);
+                        self.protocol.peers().finish_blocks_proof_request(
+                            self.peer_index,
+                            original_request,
+                            true,
+                            false,
+                        );
+                        *retire_request = None;
+                        return Status::ok();
+                    }
                     Err(error) => {
                         self.protocol
                             .peers()

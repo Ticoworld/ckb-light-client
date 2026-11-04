@@ -33,8 +33,11 @@ cache identities differ. Startup republishes verified no-match progress if its
 page commit preceded the cursor update; neither a new block nor another reply
 is required to discharge that already verified obligation.
 
-Watched cells, capacity and history queries fail while any pending coverage or
-repair fence remains. Query observations include the accepted state and index
+Watched queries retain the certified prefix while ordinary pending forward
+ranges lie above every published script cursor. A pending range at or below a
+published cursor, any repair, or an interrupted write remains fenced. This
+global check is conservative when different scripts have different cursors.
+Query observations include the accepted state and index
 revision and are checked again before returning results. Header/transaction
 availability alone does not establish complete watched coverage.
 
@@ -70,6 +73,16 @@ idempotent range replay. Neither path unconditionally clears uncertainty.
 
 ## Accepted chain changes
 
+Proven linear acceptance atomically carries the anchors of still-current pending
+ranges to the newly accepted tip. The exact-old-tip continuity proof does the
+same for long downtime. No extra historical anchors accumulate. Forks and unknown
+continuity cannot carry these expectations; their ordinary recheck remains.
+
+An in-flight valid proof for a locally rechecked range is discarded without peer
+penalty or a second rewind, and its owned fetch work becomes retryable. Positional
+mismatch against a current expectation remains an error. Storage failures are
+internal errors, never evidence against the peer.
+
 Before acceptance intent is durable, preparatory writes only preserve or enlarge
 the old chain's repair goals. Targets shortened for a replacement candidate commit
 in the same atomic batch as its acceptance intent and transition fence. A failed
@@ -95,7 +108,12 @@ magic bytes. Rollback and saved-goal readers retain the same count prefix.
 `INDEX_RECOVERY_V2 = [2]` identifies readiness under the positional coverage
 policy. Older association-only or `[1]` recovery readiness receives an in-place
 derived rescan before readiness is restored; existing rows alone cannot prove
-that no watched row is missing. The IndexedDB object-store schema and primary
+that no watched row is missing. Legacy script records retain their latest cursor,
+not the original registration birthday. Without a separately certified lower
+bound, genesis replay is deliberately retained; substituting that cursor would
+skip historical watched data. Primary bytes and saved completion goals survive
+this replay, but watched queries remain unavailable until it completes.
+The IndexedDB object-store schema and primary
 record encodings are unchanged. Downgrading a database with new pending records
 to an older binary is unsupported.
 

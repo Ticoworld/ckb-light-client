@@ -1,5 +1,42 @@
 use super::*;
 
+#[tokio::test]
+async fn wo44_valid_inflight_proof_after_recheck_is_not_penalized_or_stranded() {
+    use crate::storage::{canonical::coverage, Key, StorageBackend};
+    let clock = faketime();
+    clock.set_faketime(START);
+    let mut f = Fixture::new();
+    let hash = f.block.hash();
+    f.arm(Kind::Header, &hash).await;
+    let revision = coverage::scripts_revision(&f.storage).unwrap();
+    coverage::save_filters(&f.storage, 1, 1, vec![(1, hash.clone())], revision).unwrap();
+    let request = packed::GetBlocksProof::new_builder()
+        .last_hash(f.wire.header().calc_header_hash())
+        .block_hashes(vec![hash].pack())
+        .build();
+    f.peers
+        .update_blocks_proof_request(f.peer, Some(request), true);
+    let old = Captured::get(&f, Kind::Header, f.peer);
+    coverage::recheck(&f.storage, 1).unwrap();
+    let before = f
+        .storage
+        .get(Key::Meta("INDEX_REVISION_V1").into_vec())
+        .unwrap();
+    f.receive(f.positive(Kind::Header, f.wire.clone(), false))
+        .await;
+    assert!(f.context.not_banned(f.peer));
+    assert!(f.context.take_disconnects().is_empty());
+    assert!(slot_is_empty(&f, Kind::Header, f.peer));
+    assert_eligible(&f, Kind::Header, true);
+    assert!(!old.finish(&f, f.peer, true));
+    assert_eq!(
+        f.storage
+            .get(Key::Meta("INDEX_REVISION_V1").into_vec())
+            .unwrap(),
+        before
+    );
+}
+
 async fn hint_deadline(kind: Kind) {
     let clock = faketime();
     clock.set_faketime(START);
