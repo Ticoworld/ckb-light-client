@@ -37,6 +37,9 @@ Watched queries retain the certified prefix while ordinary pending forward
 ranges lie above every published script cursor. A pending range at or below a
 published cursor, any repair, or an interrupted write remains fenced. This
 global check is conservative when different scripts have different cursors.
+During forward pending work, capacity results identify the common indexed cursor
+and its authenticated header. If cursors differ or that header is unavailable,
+capacity remains fenced; an older balance is never labeled with a newer tip.
 Query observations include the accepted state and index
 revision and are checked again before returning results. Header/transaction
 availability alone does not establish complete watched coverage.

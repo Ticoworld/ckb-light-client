@@ -694,6 +694,8 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
 
         let tip_header = packed::Header::from_slice(&context[32..32 + packed::Header::TOTAL_SIZE])
             .map_err(|_| Error::runtime("invalid accepted state"))?;
+        let tip_header = canonical::forward_capacity_header(self.storage.as_ref(), tip_header)?;
+        canonical::check_query_context(self.storage.as_ref(), &context)?;
 
         Ok(CellsCapacity {
             capacity: capacity.into(),

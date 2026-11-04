@@ -112,6 +112,25 @@ fn wo44_forward_pending_work_preserves_certified_prefix_but_recheck_fences_it() 
     let revision = coverage::scripts_revision(&storage).unwrap();
     coverage::save_filters(&storage, 2, 1, vec![(2, blocks[1].hash())], revision).unwrap();
     assert_eq!(positional_capacity(&storage).unwrap(), 100);
+    let response = crate::service::LightClientService::new(Arc::new(storage.clone()))
+        .get_cells_capacity(crate::service::SearchKey {
+            script: storage.get_filter_scripts().remove(0).script.into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(response.block_number.value(), 1);
+    assert_eq!(
+        response.block_hash,
+        Unpack::<ckb_types::H256>::unpack(&blocks[0].hash())
+    );
+    let mapping_key = Key::BlockNumber(1).into_vec();
+    let mapping = storage.get(mapping_key.clone()).unwrap().unwrap();
+    storage.delete(&mapping_key).unwrap();
+    assert!(
+        positional_capacity(&storage).is_err(),
+        "missing indexed header must not label an old balance with the accepted tip"
+    );
+    storage.put(mapping_key, mapping).unwrap();
     coverage::recheck(&storage, 2).unwrap();
     assert!(positional_capacity(&storage).is_err());
 }
