@@ -365,21 +365,16 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
         let filter_script_clone = filter_script.clone();
 
         let error_clone = query_error.clone();
-        let cache_clone = query_cache.clone();
         let filter_map_fn = Box::new(move |key: &[u8], value: &[u8]| -> Option<Vec<u8>> {
-            let tx_hash = query_hash(value, &error_clone)?;
             let block_number =
                 u64::from_be_bytes(key[key.len() - 17..key.len() - 9].try_into().ok()?);
             let tx_index = u32::from_be_bytes(key[key.len() - 9..key.len() - 5].try_into().ok()?);
             let io_index = u32::from_be_bytes(key[key.len() - 5..key.len() - 1].try_into().ok()?);
-            query_transaction(
-                storage_clone.as_ref(),
-                &tx_hash,
-                block_number,
-                tx_index,
-                &cache_clone,
-                &error_clone,
-            )?;
+            if let Some([r0, r1]) = filter_block_range {
+                if block_number < r0 || block_number >= r1 {
+                    return None;
+                }
+            }
             let io_type = if *key.last()? == 0 {
                 crate::storage::CellType::Input
             } else {
@@ -399,6 +394,9 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
                             )
                             .into_vec(),
                         )
+                        .map_err(|error| {
+                            *error_clone.lock().expect("query error lock") = Some(error)
+                        })
                         .ok()?
                         .is_some(),
                     ScriptType::Type => storage_clone
@@ -412,17 +410,14 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
                             )
                             .into_vec(),
                         )
+                        .map_err(|error| {
+                            *error_clone.lock().expect("query error lock") = Some(error)
+                        })
                         .ok()?
                         .is_some(),
                 };
 
                 if !filter_script_matched {
-                    return None;
-                }
-            }
-
-            if let Some([r0, r1]) = filter_block_range {
-                if block_number < r0 || block_number >= r1 {
                     return None;
                 }
             }
@@ -448,7 +443,8 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
                 let key = kv_pair.key;
                 let value = kv_pair.value;
 
-                let tx_hash = packed::Byte32::from_slice(&value).ok().unwrap();
+                let tx_hash = packed::Byte32::from_slice(&value)
+                    .map_err(|_| Error::runtime("invalid watched transaction hash"))?;
 
                 if tx_with_cells.len() == limit
                     && tx_with_cells.last().unwrap().transaction.hash != tx_hash.unpack()
@@ -698,6 +694,8 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
 
         let tip_header = packed::Header::from_slice(&context[32..32 + packed::Header::TOTAL_SIZE])
             .map_err(|_| Error::runtime("invalid accepted state"))?;
+        let tip_header = canonical::forward_capacity_header(self.storage.as_ref(), tip_header)?;
+        canonical::check_query_context(self.storage.as_ref(), &context)?;
 
         Ok(CellsCapacity {
             capacity: capacity.into(),

@@ -1,5 +1,5 @@
 use ckb_network::{bytes::Bytes, CKBProtocolHandler, PeerIndex, SupportProtocols};
-use ckb_systemtime::{faketime, unix_time_as_millis};
+use ckb_systemtime::unix_time_as_millis;
 use ckb_types::{
     core::{BlockNumber, EpochNumberWithFraction, HeaderBuilder},
     packed,
@@ -18,7 +18,7 @@ use crate::{
     storage::LightClientStorage,
     tests::{
         prelude::*,
-        utils::{setup, MockChain, MockNetworkContext},
+        utils::{faketime, setup, MockChain, MockNetworkContext},
     },
 };
 
@@ -262,6 +262,7 @@ async fn test_light_client_get_idle_matched_blocks() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn refresh_all_peers() {
+    let faketime_guard = faketime();
     setup();
 
     let chain = MockChain::new_with_dummy_pow("test-light-client").start();
@@ -327,7 +328,6 @@ async fn refresh_all_peers() {
     {
         let start_ts = unix_time_as_millis();
         let timeout_ts = start_ts + REFRESH_PEERS_DURATION.as_millis() as u64 + 1;
-        let faketime_guard = faketime();
         faketime_guard.set_faketime(timeout_ts);
 
         protocol.notify(nc.context(), REFRESH_PEERS_TOKEN).await;

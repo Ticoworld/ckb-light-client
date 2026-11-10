@@ -145,6 +145,11 @@ pub(crate) fn update_state<S: StorageBackend + ?Sized>(
         && fork.is_none();
     let mut batch = storage.batch();
     if let Some(fork) = fork {
+        // The continuity-proof path supplies the exact previous tip as its
+        // retained prefix. It is a proven extension even beyond the window.
+        if !interrupted && previous.as_ref().is_some_and(|old| fork == old.number()) {
+            coverage::advance_anchors(storage, &mut batch, tip)?;
+        }
         invalidate(storage, &mut batch, fork.saturating_add(1))?;
         if storage.get(meta(INDEX_WRITING))?.is_some()
             && previous.as_ref().is_some_and(|old| fork < old.number())
@@ -155,6 +160,8 @@ pub(crate) fn update_state<S: StorageBackend + ?Sized>(
     } else if uncertain {
         invalidate(storage, &mut batch, 1)?;
         batch.put(&meta(INDEX_UNCERTAIN), &[1]);
+    } else {
+        coverage::advance_anchors(storage, &mut batch, tip)?;
     }
     super::storage_trait::write_last_state(&mut batch, work, tip, recent);
     batch.put(&meta(CONTEXT), tip.calc_header_hash().as_slice());
@@ -437,7 +444,7 @@ pub(crate) fn index_ready<S: StorageBackend + ?Sized>(storage: &S) -> Result<()>
 }
 pub(crate) fn query_context<S: StorageBackend + ?Sized>(storage: &S) -> Result<Vec<u8>> {
     index_ready(storage)?;
-    if coverage::pending(storage)? || recovery::repair_pending(storage)? {
+    if coverage::affects_index(storage)? || recovery::repair_pending(storage)? {
         return Err(Error::runtime(
             "canonical_state:repair_pending: watched coverage is being reindexed in place",
         ));
@@ -488,6 +495,66 @@ pub(crate) fn check_query_context<S: StorageBackend + ?Sized>(
         ));
     }
     Ok(())
+}
+
+/// Forward-work availability must not label a certified-prefix balance with the
+/// newer accepted tip. Without a common cursor and authenticated header, retain
+/// the conservative capacity-query fence rather than fabricate snapshot metadata.
+pub(crate) fn forward_capacity_header<S: StorageBackend + ?Sized>(
+    storage: &S,
+    accepted: packed::Header,
+) -> Result<packed::Header> {
+    if !coverage::pending(storage)? {
+        return Ok(accepted);
+    }
+    let prefix = meta(super::FILTER_SCRIPTS_KEY);
+    let select = prefix.clone();
+    let mut cursor = None;
+    for row in storage.try_collect_iterator(
+        IteratorStart::From(prefix),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        usize::MAX,
+    )? {
+        let number = row
+            .value
+            .as_slice()
+            .try_into()
+            .map(u64::from_be_bytes)
+            .map_err(|_| Error::runtime("invalid watched cursor"))?;
+        if cursor.is_some_and(|old| old != number) {
+            return Err(Error::runtime(
+                "canonical_state:retry: capacity cursors are not aligned",
+            ));
+        }
+        cursor = Some(number);
+    }
+    let number = cursor.unwrap_or(0);
+    if number == Unpack::<u64>::unpack(&accepted.raw().number()) {
+        return Ok(accepted);
+    }
+    let hash = storage
+        .get(Key::BlockNumber(number).into_vec())?
+        .ok_or_else(|| Error::runtime("canonical_state:retry: indexed header is not available"))?;
+    let hash = packed::Byte32::from_slice(&hash)
+        .map_err(|_| Error::runtime("invalid indexed block hash"))?;
+    let bytes = storage
+        .get(Key::BlockHash(&hash).into_vec())?
+        .ok_or_else(|| Error::runtime("canonical_state:retry: indexed header is not available"))?;
+    let header = bytes
+        .get(..packed::Header::TOTAL_SIZE)
+        .and_then(|bytes| packed::Header::from_slice(bytes).ok())
+        .ok_or_else(|| Error::runtime("invalid indexed header"))?;
+    if header.calc_header_hash() != hash
+        || Unpack::<u64>::unpack(&header.raw().number()) != number
+        || !anchor_current(storage, &header)?
+    {
+        return Err(Error::runtime(
+            "canonical_state:retry: indexed header is not current",
+        ));
+    }
+    Ok(header)
 }
 pub(crate) fn begin_index<S: StorageBackend + ?Sized>(storage: &S) -> Result<()> {
     storage.put(meta(INDEX_WRITING), vec![1])

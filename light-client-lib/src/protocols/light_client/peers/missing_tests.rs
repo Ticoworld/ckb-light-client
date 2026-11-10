@@ -1,3 +1,4 @@
+use crate::tests::utils::faketime;
 use crate::{
     protocols::{FilterProtocol, SyncProtocol},
     storage::{LightClientStorage, Storage, StorageWithChainData},
@@ -5,7 +6,6 @@ use crate::{
 };
 use ckb_chain_spec::consensus::ConsensusBuilder;
 use ckb_network::{CKBProtocolHandler, PeerIndex};
-use ckb_systemtime::faketime;
 use ckb_types::{packed, prelude::*};
 use std::sync::Arc;
 
@@ -372,7 +372,13 @@ async fn nonexistent_filter_hash_rechecks_and_recovers_after_reopen() {
                 .as_bytes(),
         )
         .await;
-    assert!(capacity(&f.storage).is_err());
+    let prefix = capacity(&f.storage).unwrap();
+    assert_eq!(prefix.capacity.value(), 4_100_000_000);
+    assert_eq!(
+        prefix.block_number.value(),
+        0,
+        "unproved forward data is excluded"
+    );
     f.protocol.disconnected(f.context.context(), f.peer).await;
     f.peer = PeerIndex::new(2);
     f.peers.add_peer(f.peer);
@@ -394,7 +400,9 @@ async fn nonexistent_filter_hash_rechecks_and_recovers_after_reopen() {
     f.receive(f.negative(Kind::Header, f.wire.clone(), vec![bogus]))
         .await;
     assert!(f.storage.get_earliest_matched_blocks().is_some());
-    assert!(capacity(&f.storage).is_err());
+    let prefix = capacity(&f.storage).unwrap();
+    assert_eq!(prefix.capacity.value(), 4_100_000_000);
+    assert_eq!(prefix.block_number.value(), 0);
     // Exercise the normal filter retry tick without waiting for its 15s clock.
     *crate::write_lock!(filter.last_ask_time) = None;
     filter.notify(context.context(), 0).await;
@@ -664,9 +672,14 @@ async fn completed_filter_range_must_bind_each_match_to_its_actual_height() {
                 .as_bytes(),
         )
         .await;
-    assert!(
-        service.get_cells_capacity(search()).is_err(),
-        "pending positional evidence must fence watched queries"
+    // A forward expectation cannot change the certified genesis balance.
+    // The invalid-position proof below must still trigger a repair fence.
+    let prefix = service.get_cells_capacity(search()).unwrap();
+    assert_eq!(prefix.capacity.value(), before);
+    assert_eq!(prefix.block_number.value(), 0);
+    assert_eq!(
+        prefix.block_hash,
+        Unpack::<ckb_types::H256>::unpack(&genesis.hash())
     );
     let owner = f
         .peers

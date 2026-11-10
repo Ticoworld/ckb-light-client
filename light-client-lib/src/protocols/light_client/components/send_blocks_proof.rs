@@ -100,7 +100,10 @@ impl<'a> SendBlocksProofProcess<'a> {
                 return_if_failed!(self
                     .protocol
                     .process_last_state(self.peer_index, last_header));
-                // This hint carries no request identity; an accepted reorg retires old anchors.
+                original_request
+                    .uncorrelated_hint
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                // Retain ownership until its deadline; a hint grants leniency only.
                 return Status::ok();
             } else {
                 // Since the last state is different, then no data should be contained.
@@ -272,12 +275,31 @@ impl<'a> SendBlocksProofProcess<'a> {
                     &headers,
                 ) {
                     Ok(true) => {}
-                    Ok(false) => return Status::ok(),
+                    Ok(false) => {
+                        self.protocol
+                            .peers()
+                            .clear_matched_blocks(&mut matched_blocks);
+                        self.protocol.peers().finish_blocks_proof_request(
+                            self.peer_index,
+                            original_request,
+                            true,
+                            false,
+                        );
+                        *retire_request = None;
+                        return Status::ok();
+                    }
                     Err(error) => {
                         self.protocol
                             .peers()
                             .clear_matched_blocks(&mut matched_blocks);
-                        return StatusCode::InvalidProof.with_context(error.to_string());
+                        return match error {
+                            crate::storage::canonical::coverage::HeaderCheckError::Mismatch => {
+                                StatusCode::InvalidProof.with_context(error.to_string())
+                            }
+                            crate::storage::canonical::coverage::HeaderCheckError::Storage(
+                                error,
+                            ) => StatusCode::InternalError.with_context(error.to_string()),
+                        };
                     }
                 }
             }

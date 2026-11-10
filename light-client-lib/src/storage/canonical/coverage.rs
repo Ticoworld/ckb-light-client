@@ -175,6 +175,13 @@ pub(crate) fn recheck<S: LightClientStorage + ?Sized>(storage: &S, start: u64) -
         // Legacy/changed partially indexed rows cannot be repaired by a reproof.
         return recovery::repair_ambiguous_index(storage);
     }
+    if range
+        .positions
+        .as_ref()
+        .is_some_and(|positions| positions.recheck)
+    {
+        return Ok(());
+    }
     recovery::save_recheck_targets(storage)?;
     if let Some(p) = &mut range.positions {
         p.recheck = true;
@@ -214,14 +221,129 @@ pub(crate) fn recheck<S: LightClientStorage + ?Sized>(storage: &S, start: u64) -
     bump_revision(storage, &mut batch)?;
     batch.commit()
 }
+pub(crate) fn earliest<S: StorageBackend + ?Sized>(
+    storage: &S,
+) -> Result<Option<crate::storage::MatchedBlocks>> {
+    let prefix = meta(super::super::MATCHED_FILTER_BLOCKS_KEY);
+    let select = prefix.clone();
+    let rows = storage.try_collect_iterator(
+        IteratorStart::From(prefix.clone()),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        1,
+    )?;
+    rows.into_iter()
+        .next()
+        .map(|row| {
+            let start = row
+                .key
+                .get(prefix.len()..)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u64::from_be_bytes)
+                .ok_or_else(|| Error::runtime("invalid coverage key"))?;
+            let range = decode(&row.value)?;
+            bounds(start, range.count)?;
+            Ok(crate::storage::MatchedBlocks {
+                start_number: start,
+                blocks_count: range.count,
+                blocks: range
+                    .blocks
+                    .into_iter()
+                    .map(|(hash, proved)| crate::storage::MatchedBlock { hash, proved })
+                    .collect(),
+            })
+        })
+        .transpose()
+}
+
 pub(crate) fn prepare<S: LightClientStorage + ?Sized>(storage: &S) -> Result<bool> {
-    let Some(first) = storage.get_earliest_matched_blocks() else {
+    let Some(first) = earliest(storage)? else {
         return Ok(false);
     };
     let range = load(storage, first.start_number)?;
     if !current(storage, first.start_number, &range)? {
         recheck(storage, first.start_number)?;
         return Ok(true);
+    }
+    Ok(false)
+}
+
+// Carry only pending expectations across a proven linear acceptance. This is
+// committed with LAST_STATE, so reopening cannot observe an anchor from a
+// different acceptance. Forks and unknown continuity do not carry expectations.
+pub(super) fn advance_anchors<S: StorageBackend + ?Sized>(
+    storage: &S,
+    batch: &mut S::Batch,
+    tip: &packed::Header,
+) -> Result<()> {
+    let prefix = meta(super::super::MATCHED_FILTER_BLOCKS_KEY);
+    let select = prefix.clone();
+    for row in storage.try_collect_iterator(
+        IteratorStart::From(prefix.clone()),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        usize::MAX,
+    )? {
+        let start = row
+            .key
+            .get(prefix.len()..)
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_be_bytes)
+            .ok_or_else(|| Error::runtime("invalid coverage key"))?;
+        let mut range = decode(&row.value)?;
+        if current(storage, start, &range)? {
+            range.positions.as_mut().expect("current positions").anchor = tip.as_slice().to_vec();
+            batch.put(&row.key, &encode(&range)?);
+        }
+    }
+    Ok(())
+}
+
+/// Only current positioned work above every published cursor is forward work.
+/// Any legacy/obsolete range (including a later tail) may hide incomplete rows.
+pub(crate) fn affects_index<S: StorageBackend + ?Sized>(storage: &S) -> Result<bool> {
+    if !pending(storage)? {
+        return Ok(false);
+    }
+    let scripts = meta(super::super::FILTER_SCRIPTS_KEY);
+    let select = scripts.clone();
+    let mut cursor = 0;
+    for row in storage.try_collect_iterator(
+        IteratorStart::From(scripts),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        usize::MAX,
+    )? {
+        let number = row
+            .value
+            .as_slice()
+            .try_into()
+            .map(u64::from_be_bytes)
+            .map_err(|_| Error::runtime("invalid watched cursor"))?;
+        cursor = cursor.max(number);
+    }
+    let prefix = meta(super::super::MATCHED_FILTER_BLOCKS_KEY);
+    let select = prefix.clone();
+    let rows = storage.try_collect_iterator(
+        IteratorStart::From(prefix.clone()),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        usize::MAX,
+    )?;
+    for row in rows {
+        let start = row
+            .key
+            .get(prefix.len()..)
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_be_bytes)
+            .ok_or_else(|| Error::runtime("invalid coverage key"))?;
+        if start <= cursor || !current(storage, start, &decode(&row.value)?)? {
+            return Ok(true);
+        }
     }
     Ok(false)
 }
@@ -313,15 +435,25 @@ pub(crate) fn save_filters<S: LightClientStorage + ?Sized>(
 
 /// Authenticate the header first (PoW/MMR), then check the saved expectation.
 /// A mismatched proof must not install membership or watched-state provenance.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HeaderCheckError {
+    #[error(transparent)]
+    Storage(#[from] Error),
+    #[error("proof does not match saved filter positions; refilter required")]
+    Mismatch,
+}
 pub(crate) fn check_headers<S: LightClientStorage + ?Sized>(
     storage: &S,
     headers: &[HeaderView],
-) -> Result<bool> {
-    let Some(first) = storage.get_earliest_matched_blocks() else {
+) -> std::result::Result<bool, HeaderCheckError> {
+    let Some(first) = earliest(storage)? else {
         return Ok(true);
     };
     let range = load(storage, first.start_number)?;
-    let mut valid = current(storage, first.start_number, &range)?;
+    if !current(storage, first.start_number, &range)? {
+        return Ok(false);
+    }
+    let mut valid = true;
     if let Some(p) = &range.positions {
         valid &= headers.iter().all(|h| {
             p.matches.iter().any(|(n, hash, _)| {
@@ -333,9 +465,7 @@ pub(crate) fn check_headers<S: LightClientStorage + ?Sized>(
     }
     if !valid {
         recheck(storage, first.start_number)?;
-        return Err(Error::runtime(
-            "proof does not match saved filter positions; refilter required",
-        ));
+        return Err(HeaderCheckError::Mismatch);
     }
     Ok(true)
 }
@@ -348,7 +478,7 @@ pub(crate) fn check_bodies<S: LightClientStorage + ?Sized>(
         .ok_or_else(|| Error::runtime("missing coverage"))?;
     let range = load(storage, first.start_number)?;
     let headers: Vec<_> = blocks.iter().map(|b| b.header().into_view()).collect();
-    if !check_headers(storage, &headers)? {
+    if !check_headers(storage, &headers).map_err(|error| Error::runtime(error.to_string()))? {
         return Err(Error::runtime("obsolete coverage bodies"));
     }
     let p = range

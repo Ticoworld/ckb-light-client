@@ -433,6 +433,15 @@ async fn no_match_filter_case(pending: bool, stale: bool) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_filter_ok_with_blocks_matched() {
+    block_filter_matched_case(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wo44_stale_range_before_filter_tick_does_not_panic_or_lose_work() {
+    block_filter_matched_case(true).await;
+}
+
+async fn block_filter_matched_case(stale: bool) {
     setup();
 
     let chain = MockChain::new_with_dummy_pow("test-block-filter").start();
@@ -522,8 +531,29 @@ async fn test_block_filter_ok_with_blocks_matched() {
 
     let mut protocol = chain.create_filter_protocol(Arc::clone(&peers));
     peers.mock_latest_block_filter_hashes(peer_index, 0, filter_hashes);
+    if stale {
+        chain
+            .client_storage()
+            .add_matched_blocks(1, 1, vec![(block_hash_1.clone(), false)]);
+        let mut matched = peers.matched_blocks().write().await;
+        peers.add_matched_blocks(&mut matched, vec![(block_hash_1.clone(), false)]);
+    }
     protocol.received(nc.context(), peer_index, message).await;
     assert!(nc.not_banned(peer_index));
+
+    if stale {
+        assert!(peers.matched_blocks().read().await.is_empty());
+        assert_eq!(
+            chain
+                .client_storage()
+                .get_earliest_matched_blocks()
+                .unwrap()
+                .start_number,
+            1
+        );
+        assert_eq!(chain.client_storage().get_min_filtered_block_number(), 0);
+        return;
+    }
 
     let get_blocks_proof_message = {
         let content = packed::GetBlocksProof::new_builder()

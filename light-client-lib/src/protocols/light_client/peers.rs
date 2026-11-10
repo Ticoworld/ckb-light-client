@@ -2,7 +2,10 @@ use std::{
     collections::{HashMap, HashSet},
     fmt, mem,
     num::NonZeroU32,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use ckb_network::PeerIndex;
@@ -171,6 +174,7 @@ pub struct ProveState {
 #[derive(Clone)]
 pub(crate) struct BlocksProofRequest {
     owner: Arc<()>,
+    pub(crate) uncorrelated_hint: Arc<AtomicBool>,
     content: packed::GetBlocksProof,
     when_sent: u64,
     should_get_blocks: bool,
@@ -186,6 +190,7 @@ pub(crate) struct BlocksRequest {
 #[derive(Clone)]
 pub(crate) struct TransactionsProofRequest {
     owner: Arc<()>,
+    pub(crate) uncorrelated_hint: Arc<AtomicBool>,
     content: packed::GetTransactionsProof,
     when_sent: u64,
 }
@@ -413,6 +418,7 @@ impl BlocksProofRequest {
             when_sent,
             should_get_blocks,
             owner: Arc::new(()),
+            uncorrelated_hint: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -480,6 +486,7 @@ impl TransactionsProofRequest {
             content,
             when_sent,
             owner: Arc::new(()),
+            uncorrelated_hint: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -2130,6 +2137,31 @@ impl Peers {
             let current_cached_check_point_index = cached_data.0;
             should_cached_check_point_index == current_cached_check_point_index
                 && cached_data.1.len() as BlockNumber == self.check_point_interval
+        }
+    }
+
+    /// A hashless hint grants timeout leniency, never request attribution. Even
+    /// a replay cannot shorten or extend the captured owner's original deadline.
+    /// Expiration releases retryable work without punishing an otherwise live peer.
+    pub(crate) fn expire_hinted_proof_requests(&self, now: u64) {
+        let peers: Vec<_> = self
+            .inner
+            .iter()
+            .map(|item| (*item.key(), item.value().clone()))
+            .collect();
+        for (index, peer) in peers {
+            if let Some(request) = peer.blocks_proof_request.filter(|request| {
+                request.uncorrelated_hint.load(Ordering::Relaxed)
+                    && now.saturating_sub(request.when_sent) > MESSAGE_TIMEOUT
+            }) {
+                self.finish_blocks_proof_request(index, &request, true, false);
+            }
+            if let Some(request) = peer.txs_proof_request.filter(|request| {
+                request.uncorrelated_hint.load(Ordering::Relaxed)
+                    && now.saturating_sub(request.when_sent) > MESSAGE_TIMEOUT
+            }) {
+                self.finish_txs_proof_request(index, &request, true, false);
+            }
         }
     }
 
