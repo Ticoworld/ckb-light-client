@@ -321,6 +321,63 @@ fn wo44_history_page_does_not_validate_2000_irrelevant_tail_transactions() {
 }
 
 #[test]
+fn wo44_history_filters_and_page_continuation_preserve_canonical_results() {
+    use crate::service::{LightClientService, Order, SearchKey, SearchKeyFilter};
+    let (_directory, storage, blocks) = positional_fixture();
+    replay_target_page(&storage, 1, 2, &blocks[..2]);
+    let script = storage.get_filter_scripts().remove(0).script;
+    let service = LightClientService::new(Arc::new(storage));
+    let key = |grouped| SearchKey {
+        script: script.clone().into(),
+        group_by_transaction: Some(grouped),
+        ..Default::default()
+    };
+    let first_hash = Unpack::<ckb_types::H256>::unpack(&blocks[0].transactions()[0].hash());
+    let second_hash = Unpack::<ckb_types::H256>::unpack(&blocks[1].transactions()[0].hash());
+    for grouped in [false, true] {
+        let first = service
+            .get_transactions(key(grouped), Order::Asc, 1u32.into(), None)
+            .unwrap();
+        assert_eq!(first.objects.len(), 1);
+        assert_eq!(first.objects[0].tx_hash(), first_hash);
+        let second = service
+            .get_transactions(
+                key(grouped),
+                Order::Asc,
+                1u32.into(),
+                Some(first.last_cursor),
+            )
+            .unwrap();
+        assert_eq!(second.objects.len(), 1);
+        assert_eq!(second.objects[0].tx_hash(), second_hash);
+        let reverse = service
+            .get_transactions(key(grouped), Order::Desc, 1u32.into(), None)
+            .unwrap();
+        assert_eq!(reverse.objects[0].tx_hash(), second_hash);
+        let mut range = key(grouped);
+        range.filter = Some(SearchKeyFilter {
+            block_range: Some([2u64.into(), 3u64.into()]),
+            ..Default::default()
+        });
+        let filtered = service
+            .get_transactions(range, Order::Asc, 10u32.into(), None)
+            .unwrap();
+        assert_eq!(filtered.objects.len(), 1);
+        assert_eq!(filtered.objects[0].tx_hash(), second_hash);
+        let mut secondary = key(grouped);
+        secondary.filter = Some(SearchKeyFilter {
+            script: Some(packed::Script::default().into()),
+            ..Default::default()
+        });
+        assert!(service
+            .get_transactions(secondary, Order::Asc, 10u32.into(), None)
+            .unwrap()
+            .objects
+            .is_empty());
+    }
+}
+
+#[test]
 fn wo44_pending_range_scan_failure_propagates_without_panicking() {
     let (_directory, storage, _) = positional_fixture();
     let before = snapshot_target_rows(&storage);
