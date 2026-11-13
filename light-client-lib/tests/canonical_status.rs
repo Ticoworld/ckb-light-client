@@ -1209,6 +1209,148 @@ async fn watched_queries_require_bound_history_and_rollback_removes_cells() {
 }
 
 #[tokio::test]
+async fn multi_script_pending_coverage_only_fences_the_behind_script() {
+    for replace_all in [false, true] {
+        for matched in [false, true] {
+            let mut f = Fixture::new(false, false).await;
+            f.receive().await;
+            index_fixture(&f);
+
+            let script_a = transaction(&f).raw().outputs().get(0).unwrap().lock();
+            let script_b = packed::Script::new_builder()
+                .args(b"new-script-birthday-40".to_vec().pack())
+                .build();
+
+            // Model accepted, consecutively linked ordinary extension and the
+            // completed no-match filter pages that leave A certified at 100.
+            let mut tip = f.storage.get_tip_header().into_view();
+            for number in tip.number() + 1..=100 {
+                let next = core::HeaderBuilder::default()
+                    .number(number)
+                    .parent_hash(tip.hash())
+                    .epoch(core::EpochNumberWithFraction::new(0, number, 100))
+                    .build();
+                f.storage.update_last_state(
+                    &U256::from(number + 1),
+                    &next.data(),
+                    std::slice::from_ref(&tip),
+                );
+                tip = next;
+            }
+            f.storage.update_block_number(100);
+
+            let script_b_status = ScriptStatus {
+                script: script_b.clone(),
+                script_type: ScriptType::Lock,
+                block_number: 40,
+            };
+            if replace_all {
+                f.storage.update_filter_scripts(
+                    vec![
+                        ScriptStatus {
+                            script: script_a.clone(),
+                            script_type: ScriptType::Lock,
+                            block_number: 100,
+                        },
+                        script_b_status,
+                    ],
+                    SetScriptsCommand::All,
+                );
+            } else {
+                f.storage
+                    .update_filter_scripts(vec![script_b_status], SetScriptsCommand::Partial);
+            }
+
+            // B's ordinary unmatched pages have reached the block before the
+            // pending match. A's already-certified cursor must not be rewound.
+            f.storage.update_block_number(54);
+
+            let matched_hash = packed::Byte32::new([55; 32]);
+            f.storage.add_positioned_matched_blocks(
+                55,
+                1,
+                if matched {
+                    vec![(55, matched_hash)]
+                } else {
+                    Vec::new()
+                },
+            );
+            if !matched {
+                f.storage.update_block_number(55);
+            }
+
+            let service = queries(&f);
+            let search = |script: &packed::Script| SearchKey {
+                script: script.clone().into(),
+                ..SearchKey::default()
+            };
+            let assert_a_available = |service: &LightClientService<Storage>| {
+                assert_eq!(
+                    service
+                        .get_cells(search(&script_a), Order::Asc, 100u32.into(), None)
+                        .unwrap()
+                        .objects
+                        .len(),
+                    1
+                );
+                assert_eq!(
+                    service
+                        .get_transactions(search(&script_a), Order::Asc, 100u32.into(), None)
+                        .unwrap()
+                        .objects
+                        .len(),
+                    1
+                );
+                let capacity = service.get_cells_capacity(search(&script_a)).unwrap();
+                assert_eq!(capacity.capacity.value(), 100);
+                assert_eq!(capacity.block_number.value(), 100);
+                assert_eq!(capacity.block_hash, tip.hash().unpack());
+            };
+            let assert_b_fenced = |service: &LightClientService<Storage>| {
+                assert!(service
+                    .get_cells(search(&script_b), Order::Asc, 100u32.into(), None)
+                    .is_err());
+                assert!(service
+                    .get_transactions(search(&script_b), Order::Asc, 100u32.into(), None)
+                    .is_err());
+                assert!(service.get_cells_capacity(search(&script_b)).is_err());
+            };
+
+            assert_a_available(&service);
+            assert_b_fenced(&service);
+
+            // The unproved page survives a restart. An unmatched page can be
+            // completed, but B remains incomplete until it catches up to tip.
+            f = f.reopen();
+            let service = queries(&f);
+            assert_a_available(&service);
+            assert_b_fenced(&service);
+            if !matched {
+                f.storage.finish_matched_blocks(55, 55);
+                let service = queries(&f);
+                assert_a_available(&service);
+                assert_b_fenced(&service);
+                f.storage.update_block_number(100);
+                let service = queries(&f);
+                assert!(service
+                    .get_cells(search(&script_b), Order::Asc, 100u32.into(), None)
+                    .unwrap()
+                    .objects
+                    .is_empty());
+                assert!(service
+                    .get_transactions(search(&script_b), Order::Asc, 100u32.into(), None)
+                    .unwrap()
+                    .objects
+                    .is_empty());
+                let capacity = service.get_cells_capacity(search(&script_b)).unwrap();
+                assert_eq!(capacity.capacity.value(), 0);
+                assert_eq!(capacity.block_number.value(), 100);
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn unknown_continuity_revokes_old_membership_and_blocks_watched_claims_until_explicit_reindex(
 ) {
     let mut f = Fixture::new(false, false).await;
