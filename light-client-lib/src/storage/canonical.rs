@@ -443,12 +443,21 @@ pub(crate) fn index_ready<S: StorageBackend + ?Sized>(storage: &S) -> Result<()>
     Ok(())
 }
 pub(crate) fn query_context<S: StorageBackend + ?Sized>(storage: &S) -> Result<Vec<u8>> {
+    query_context_inner(storage, None)
+}
+
+pub(crate) fn query_context_for<S: StorageBackend + ?Sized>(
+    storage: &S,
+    scope: &[u8],
+) -> Result<Vec<u8>> {
+    query_context_inner(storage, Some(scope))
+}
+
+fn query_context_inner<S: StorageBackend + ?Sized>(
+    storage: &S,
+    scope: Option<&[u8]>,
+) -> Result<Vec<u8>> {
     index_ready(storage)?;
-    if coverage::affects_index(storage)? || recovery::repair_pending(storage)? {
-        return Err(Error::runtime(
-            "canonical_state:repair_pending: watched coverage is being reindexed in place",
-        ));
-    }
     let rows = storage.get_many(&[
         meta(LAST_STATE_KEY),
         meta(TRANSITION),
@@ -480,8 +489,28 @@ pub(crate) fn query_context<S: StorageBackend + ?Sized>(storage: &S) -> Result<V
     {
         return Err(Error::runtime("accepted state and chain context disagree"));
     }
+    let affects_scope = match scope {
+        Some(scope) => coverage::affects_scope(storage, scope, tip.number())?,
+        None => coverage::affects_index(storage)?,
+    };
+    if affects_scope || recovery::repair_pending(storage)? {
+        return Err(Error::runtime(
+            "canonical_state:repair_pending: watched coverage is being reindexed in place",
+        ));
+    }
     if let Some(revision) = &rows[5] {
         state.extend_from_slice(revision);
+    }
+    if let Some(scope) = scope {
+        state.extend_from_slice(&(scope.len() as u64).to_be_bytes());
+        state.extend_from_slice(scope);
+        match coverage::script_cursor(storage, scope)? {
+            Some(cursor) => {
+                state.push(1);
+                state.extend_from_slice(&cursor.to_be_bytes());
+            }
+            None => state.push(0),
+        }
     }
     Ok(state)
 }
@@ -490,6 +519,19 @@ pub(crate) fn check_query_context<S: StorageBackend + ?Sized>(
     context: &[u8],
 ) -> Result<()> {
     if query_context(storage)? != context {
+        return Err(Error::runtime(
+            "canonical_state:retry: chain or watched index changed during query",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn check_query_context_for<S: StorageBackend + ?Sized>(
+    storage: &S,
+    context: &[u8],
+    scope: &[u8],
+) -> Result<()> {
+    if query_context_for(storage, scope)? != context {
         return Err(Error::runtime(
             "canonical_state:retry: chain or watched index changed during query",
         ));
@@ -555,6 +597,23 @@ pub(crate) fn forward_capacity_header<S: StorageBackend + ?Sized>(
         ));
     }
     Ok(header)
+}
+
+pub(crate) fn forward_capacity_header_for<S: StorageBackend + ?Sized>(
+    storage: &S,
+    accepted: packed::Header,
+    scope: &[u8],
+) -> Result<packed::Header> {
+    if coverage::cursors_diverge(storage)? {
+        let tip = Unpack::<u64>::unpack(&accepted.raw().number());
+        if coverage::script_cursor(storage, scope)? != Some(tip) {
+            return Err(Error::runtime(
+                "canonical_state:retry: requested script is not indexed through accepted tip",
+            ));
+        }
+        return Ok(accepted);
+    }
+    forward_capacity_header(storage, accepted)
 }
 pub(crate) fn begin_index<S: StorageBackend + ?Sized>(storage: &S) -> Result<()> {
     storage.put(meta(INDEX_WRITING), vec![1])

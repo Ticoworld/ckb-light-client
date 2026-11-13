@@ -348,6 +348,108 @@ pub(crate) fn affects_index<S: StorageBackend + ?Sized>(storage: &S) -> Result<b
     Ok(false)
 }
 
+fn script_cursors<S: StorageBackend + ?Sized>(storage: &S) -> Result<Vec<(Vec<u8>, u64)>> {
+    let prefix = meta(super::super::FILTER_SCRIPTS_KEY);
+    let select = prefix.clone();
+    storage
+        .try_collect_iterator(
+            IteratorStart::From(prefix.clone()),
+            IteratorDirection::Forward,
+            Box::new(move |key| key.starts_with(&select)),
+            Box::new(|_, value| Some(value.to_vec())),
+            usize::MAX,
+        )?
+        .into_iter()
+        .map(|row| {
+            let cursor = row
+                .value
+                .as_slice()
+                .try_into()
+                .map(u64::from_be_bytes)
+                .map_err(|_| Error::runtime("invalid watched cursor"))?;
+            Ok((row.key[prefix.len()..].to_vec(), cursor))
+        })
+        .collect()
+}
+
+pub(crate) fn script_cursor<S: StorageBackend + ?Sized>(
+    storage: &S,
+    scope: &[u8],
+) -> Result<Option<u64>> {
+    let mut key = meta(super::super::FILTER_SCRIPTS_KEY);
+    key.extend_from_slice(scope);
+    storage
+        .get(key)?
+        .map(|value| {
+            value
+                .as_slice()
+                .try_into()
+                .map(u64::from_be_bytes)
+                .map_err(|_| Error::runtime("invalid watched cursor"))
+        })
+        .transpose()
+}
+
+pub(crate) fn cursors_diverge<S: StorageBackend + ?Sized>(storage: &S) -> Result<bool> {
+    let cursors = script_cursors(storage)?;
+    Ok(cursors
+        .first()
+        .is_some_and(|(_, first)| cursors.iter().any(|(_, cursor)| cursor != first)))
+}
+
+/// A lagging script cannot claim a complete current-tip result while another
+/// script is ahead. A current pending range still fences a scope it reaches;
+/// invalid ranges and aligned-cursor queries retain the existing conservative
+/// behavior.
+pub(crate) fn affects_scope<S: StorageBackend + ?Sized>(
+    storage: &S,
+    scope: &[u8],
+    accepted_tip: u64,
+) -> Result<bool> {
+    let cursor = script_cursor(storage, scope)?;
+    let Some(cursor) = cursor else {
+        // An unregistered scope has no completeness certificate. Keep the
+        // existing global pending-range policy for it.
+        return affects_index(storage);
+    };
+    if cursor != accepted_tip {
+        return Ok(true);
+    }
+    if !pending(storage)? {
+        return Ok(false);
+    }
+
+    let cursors = script_cursors(storage)?;
+    let diverged = cursors
+        .first()
+        .is_some_and(|(_, first)| cursors.iter().any(|(_, number)| number != first));
+    if !diverged {
+        return affects_index(storage);
+    }
+
+    let prefix = meta(super::super::MATCHED_FILTER_BLOCKS_KEY);
+    let select = prefix.clone();
+    for row in storage.try_collect_iterator(
+        IteratorStart::From(prefix.clone()),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        usize::MAX,
+    )? {
+        let start = row
+            .key
+            .get(prefix.len()..)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u64::from_be_bytes)
+            .ok_or_else(|| Error::runtime("invalid coverage key"))?;
+        let range = decode(&row.value)?;
+        if !current(storage, start, &range)? || bounds(start, range.count)? > cursor {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Called only after validating the filter hash chain and matching its script
 /// data. Script updates, acceptance, proof admission and indexing share the
 /// matched-block lock; the revision is captured before computing the matches.

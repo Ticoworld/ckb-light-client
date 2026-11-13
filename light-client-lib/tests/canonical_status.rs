@@ -1321,6 +1321,7 @@ async fn multi_script_pending_coverage_only_fences_the_behind_script() {
 
             // The unproved page survives a restart. An unmatched page can be
             // completed, but B remains incomplete until it catches up to tip.
+            drop(service);
             f = f.reopen();
             let service = queries(&f);
             assert_a_available(&service);

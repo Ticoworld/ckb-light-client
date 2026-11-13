@@ -78,6 +78,16 @@ fn query_result(error: &Mutex<Option<Error>>) -> Result<()> {
         Ok(())
     }
 }
+
+fn query_scope(search_key: &SearchKey) -> Vec<u8> {
+    let script: packed::Script = search_key.script.clone().into();
+    let mut scope = script.as_slice().to_vec();
+    scope.push(match search_key.script_type {
+        ScriptType::Lock => 0,
+        ScriptType::Type => 1,
+    });
+    scope
+}
 fn query_hash(bytes: &[u8], error: &Mutex<Option<Error>>) -> Option<packed::Byte32> {
     match packed::Byte32::from_slice(bytes) {
         Ok(hash) => Some(hash),
@@ -128,7 +138,8 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
         limit: Uint32,
         after_cursor: Option<JsonBytes>,
     ) -> Result<Pagination<Cell>> {
-        let context = canonical::query_context(self.storage.as_ref())?;
+        let scope = query_scope(&search_key);
+        let context = canonical::query_context_for(self.storage.as_ref(), &scope)?;
         let query_error = Arc::new(Mutex::new(None));
         let query_cache = Arc::new(Mutex::new(None));
         let (prefix, iter_start, iter_direction) = build_query_options(
@@ -299,7 +310,7 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
             .collect();
 
         query_result(&query_error)?;
-        canonical::check_query_context(self.storage.as_ref(), &context)?;
+        canonical::check_query_context_for(self.storage.as_ref(), &context, &scope)?;
         Ok(Pagination {
             objects: cells,
             last_cursor: JsonBytes::from_vec(last_key),
@@ -318,7 +329,8 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
         limit: Uint32,
         after_cursor: Option<JsonBytes>,
     ) -> Result<Pagination<Tx>> {
-        let context = canonical::query_context(self.storage.as_ref())?;
+        let scope = query_scope(&search_key);
+        let context = canonical::query_context_for(self.storage.as_ref(), &scope)?;
         let query_error = Arc::new(Mutex::new(None));
         let query_cache = Arc::new(Mutex::new(None));
         let (prefix, iter_start, iter_direction) = build_query_options(
@@ -434,7 +446,7 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
         )?;
 
         query_result(&query_error)?;
-        canonical::check_query_context(self.storage.as_ref(), &context)?;
+        canonical::check_query_context_for(self.storage.as_ref(), &context, &scope)?;
         if search_key.group_by_transaction.unwrap_or_default() {
             let mut tx_with_cells: Vec<TxWithCells> = Vec::new();
             let mut last_key = Vec::new();
@@ -495,7 +507,7 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
                 }
             }
 
-            canonical::check_query_context(self.storage.as_ref(), &context)?;
+            canonical::check_query_context_for(self.storage.as_ref(), &context, &scope)?;
             Ok(Pagination {
                 objects: tx_with_cells.into_iter().map(Tx::Grouped).collect(),
                 last_cursor: JsonBytes::from_vec(last_key),
@@ -543,7 +555,7 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
                 .collect::<Vec<_>>();
 
             query_result(&query_error)?;
-            canonical::check_query_context(self.storage.as_ref(), &context)?;
+            canonical::check_query_context_for(self.storage.as_ref(), &context, &scope)?;
             Ok(Pagination {
                 objects: txs,
                 last_cursor: JsonBytes::from_vec(last_key),
@@ -556,7 +568,8 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
     /// This method calculates the sum of capacities for all cells matching
     /// the search criteria and returns the total along with current tip block info.
     pub fn get_cells_capacity(&self, search_key: SearchKey) -> Result<CellsCapacity> {
-        let context = canonical::query_context(self.storage.as_ref())?;
+        let scope = query_scope(&search_key);
+        let context = canonical::query_context_for(self.storage.as_ref(), &scope)?;
         let query_error = Arc::new(Mutex::new(None));
         let query_cache = Arc::new(Mutex::new(None));
         let (prefix, iter_start, iter_direction) = build_query_options(
@@ -683,7 +696,7 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
         )?;
 
         query_result(&query_error)?;
-        canonical::check_query_context(self.storage.as_ref(), &context)?;
+        canonical::check_query_context_for(self.storage.as_ref(), &context, &scope)?;
         let capacity: u64 = results
             .into_iter()
             .filter_map(|kv_pair| {
@@ -694,8 +707,9 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
 
         let tip_header = packed::Header::from_slice(&context[32..32 + packed::Header::TOTAL_SIZE])
             .map_err(|_| Error::runtime("invalid accepted state"))?;
-        let tip_header = canonical::forward_capacity_header(self.storage.as_ref(), tip_header)?;
-        canonical::check_query_context(self.storage.as_ref(), &context)?;
+        let tip_header =
+            canonical::forward_capacity_header_for(self.storage.as_ref(), tip_header, &scope)?;
+        canonical::check_query_context_for(self.storage.as_ref(), &context, &scope)?;
 
         Ok(CellsCapacity {
             capacity: capacity.into(),
