@@ -1211,7 +1211,7 @@ async fn watched_queries_require_bound_history_and_rollback_removes_cells() {
 #[tokio::test]
 async fn multi_script_pending_coverage_only_fences_the_behind_script() {
     for replace_all in [false, true] {
-        for matched in [false, true] {
+        for matched in [true, false] {
             let mut f = Fixture::new(false, false).await;
             f.receive().await;
             index_fixture(&f);
