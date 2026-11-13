@@ -1259,7 +1259,8 @@ fn get_cells_after_rollback_bug() {
     storage.rollback_to_block(2);
 
     // rollback_to_block alone leaves the accepted tip at the old height, so
-    // those rows cannot be returned as a complete query for the accepted chain.
+    // cell and transaction queries remain fenced. Capacity can name only the
+    // common authenticated prefix retained by both watched scripts.
     for script in [lock_script1.clone(), lock_script2.clone()] {
         let search = || SearchKey {
             script: script.clone().into(),
@@ -1271,7 +1272,9 @@ fn get_cells_after_rollback_bug() {
         assert!(rpc
             .get_transactions(search(), Order::Asc, 150.into(), None)
             .is_err());
-        assert!(rpc.get_cells_capacity(search()).is_err());
+        let capacity = rpc.get_cells_capacity(search()).unwrap();
+        assert_eq!(capacity.block_number.value(), 1);
+        assert_eq!(capacity.block_hash, block1.hash().unpack());
     }
 }
 
