@@ -442,6 +442,7 @@ pub(crate) fn index_ready<S: StorageBackend + ?Sized>(storage: &S) -> Result<()>
     }
     Ok(())
 }
+#[cfg(test)]
 pub(crate) fn query_context<S: StorageBackend + ?Sized>(storage: &S) -> Result<Vec<u8>> {
     query_context_inner(storage, None)
 }
@@ -514,6 +515,7 @@ fn query_context_inner<S: StorageBackend + ?Sized>(
     }
     Ok(state)
 }
+#[cfg(test)]
 pub(crate) fn check_query_context<S: StorageBackend + ?Sized>(
     storage: &S,
     context: &[u8],
