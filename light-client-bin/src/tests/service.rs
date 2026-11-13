@@ -887,94 +887,22 @@ fn rpc() {
 
     let rpc = create_block_filter_rpc(storage.clone(), create_peers());
 
-    // test get_cells rpc after rollback
-    let cells_page_1 = rpc
-        .get_cells(
-            SearchKey {
-                script: lock_script1.clone().into(),
-                ..Default::default()
-            },
-            Order::Asc,
-            150.into(),
-            None,
-        )
-        .unwrap();
-    let cells_page_2 = rpc
-        .get_cells(
-            SearchKey {
-                script: lock_script1.clone().into(),
-                ..Default::default()
-            },
-            Order::Asc,
-            150.into(),
-            Some(cells_page_1.last_cursor),
-        )
-        .unwrap();
-
-    assert_eq!(
-            total_blocks as usize - 1,
-            cells_page_1.objects.len() + cells_page_2.objects.len(),
-            "total size should be cellbase cells count + 1 (last block live cell) - 2 (rollbacked blocks cells)"
-        );
-
-    let cells_page_1 = rpc
-        .get_cells(
-            SearchKey {
-                script: type_script1.clone().into(),
-                script_type: ScriptType::Type,
-                ..Default::default()
-            },
-            Order::Asc,
-            150.into(),
-            None,
-        )
-        .unwrap();
-
-    assert_eq!(
-        1,
-        cells_page_1.objects.len(),
-        "total size should be 1 (last block live cell)"
-    );
-
-    // test get_transactions rpc after rollback
-    let txs_page_1 = rpc
-        .get_transactions(
-            SearchKey {
-                script: lock_script1.clone().into(),
-                ..Default::default()
-            },
-            Order::Asc,
-            500.into(),
-            None,
-        )
-        .unwrap();
-    let txs_page_2 = rpc
-        .get_transactions(
-            SearchKey {
-                script: lock_script1.clone().into(),
-                ..Default::default()
-            },
-            Order::Asc,
-            500.into(),
-            Some(txs_page_1.last_cursor),
-        )
-        .unwrap();
-
-    assert_eq!((total_blocks - 2) as usize * 3 - 1, txs_page_1.objects.len() + txs_page_2.objects.len(), "total size should be cellbase tx count + (total_block - 2) * 2 - 1 (genesis block only has one tx)");
-
-    // test get_cells_capacity rpc after rollback
-    let cc = rpc
-        .get_cells_capacity(SearchKey {
-            script: lock_script1.clone().into(),
+    // This low-level rollback removes indexed rows but does not establish the
+    // replacement accepted tip or complete filter coverage. Wallet reads must
+    // remain fenced until the normal canonical recovery path proves that state.
+    for script in [lock_script1.clone(), type_script1.clone()] {
+        let search = SearchKey {
+            script: script.into(),
             ..Default::default()
-        })
-        .unwrap();
-
-    assert_eq!(
-        1000 * 100000000 * (total_blocks - 1),
-        cc.capacity.value(),
-        "cellbases + last block live cell - 2 (rollbacked blocks cells)"
-    );
+        };
+        assert!(rpc
+            .get_cells(search.clone(), Order::Asc, 150.into(), None)
+            .is_err());
+        assert!(rpc
+            .get_transactions(search.clone(), Order::Asc, 500.into(), None)
+            .is_err());
+        assert!(rpc.get_cells_capacity(search).is_err());
+    }
 
     // test get_transaction rpc
     peers.fetching_txs().insert(
@@ -1314,73 +1242,21 @@ fn get_cells_after_rollback_bug() {
 
     storage.rollback_to_block(2);
 
-    let cc = rpc
-        .get_cells_capacity(SearchKey {
-            script: lock_script2.clone().into(),
+    // rollback_to_block alone leaves the accepted tip at the old height, so
+    // those rows cannot be returned as a complete query for the accepted chain.
+    for script in [lock_script1.clone(), lock_script2.clone()] {
+        let search = SearchKey {
+            script: script.into(),
             ..Default::default()
-        })
-        .unwrap();
-    assert_eq!(100 * 100000000, cc.capacity.value());
-
-    let cells = rpc
-        .get_cells(
-            SearchKey {
-                script: lock_script2.clone().into(),
-                ..Default::default()
-            },
-            Order::Asc,
-            150.into(),
-            None,
-        )
-        .unwrap();
-    assert_eq!(1, cells.objects.len());
-
-    let txs = rpc
-        .get_transactions(
-            SearchKey {
-                script: lock_script2.clone().into(),
-                ..Default::default()
-            },
-            Order::Asc,
-            150.into(),
-            None,
-        )
-        .unwrap();
-    assert_eq!(1, txs.objects.len());
-
-    let cc = rpc
-        .get_cells_capacity(SearchKey {
-            script: lock_script1.clone().into(),
-            ..Default::default()
-        })
-        .unwrap();
-    assert_eq!((1000 + 222 + 333) * 100000000, cc.capacity.value());
-
-    let cells = rpc
-        .get_cells(
-            SearchKey {
-                script: lock_script1.clone().into(),
-                ..Default::default()
-            },
-            Order::Asc,
-            150.into(),
-            None,
-        )
-        .unwrap();
-    assert_eq!(3, cells.objects.len());
-
-    let txs = rpc
-        .get_transactions(
-            SearchKey {
-                script: lock_script1.clone().into(),
-                ..Default::default()
-            },
-            Order::Asc,
-            150.into(),
-            None,
-        )
-        .unwrap();
-    assert_eq!(3, txs.objects.len());
+        };
+        assert!(rpc
+            .get_cells(search.clone(), Order::Asc, 150.into(), None)
+            .is_err());
+        assert!(rpc
+            .get_transactions(search.clone(), Order::Asc, 150.into(), None)
+            .is_err());
+        assert!(rpc.get_cells_capacity(search).is_err());
+    }
 }
 
 #[test]
