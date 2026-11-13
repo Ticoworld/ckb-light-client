@@ -35,8 +35,10 @@ use crate::{
 // Query/transaction-verification fixtures trust a checkpoint explicitly. They do
 // not test protocol proof acceptance; protocol suites use actual proofs separately.
 fn index_accepted_fixture(storage: &storage::Storage, block: Block) {
+    let block_number = block.header().number().unpack();
     storage.update_last_state(&U256::one(), &block.header(), &[]);
     storage.filter_block(block);
+    storage.update_block_number(block_number);
 }
 
 #[test]
