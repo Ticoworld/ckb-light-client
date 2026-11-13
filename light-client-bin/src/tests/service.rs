@@ -891,17 +891,17 @@ fn rpc() {
     // replacement accepted tip or complete filter coverage. Wallet reads must
     // remain fenced until the normal canonical recovery path proves that state.
     for script in [lock_script1.clone(), type_script1.clone()] {
-        let search = SearchKey {
-            script: script.into(),
+        let search = || SearchKey {
+            script: script.clone().into(),
             ..Default::default()
         };
         assert!(rpc
-            .get_cells(search.clone(), Order::Asc, 150.into(), None)
+            .get_cells(search(), Order::Asc, 150.into(), None)
             .is_err());
         assert!(rpc
-            .get_transactions(search.clone(), Order::Asc, 500.into(), None)
+            .get_transactions(search(), Order::Asc, 500.into(), None)
             .is_err());
-        assert!(rpc.get_cells_capacity(search).is_err());
+        assert!(rpc.get_cells_capacity(search()).is_err());
     }
 
     // test get_transaction rpc
@@ -1245,17 +1245,17 @@ fn get_cells_after_rollback_bug() {
     // rollback_to_block alone leaves the accepted tip at the old height, so
     // those rows cannot be returned as a complete query for the accepted chain.
     for script in [lock_script1.clone(), lock_script2.clone()] {
-        let search = SearchKey {
-            script: script.into(),
+        let search = || SearchKey {
+            script: script.clone().into(),
             ..Default::default()
         };
         assert!(rpc
-            .get_cells(search.clone(), Order::Asc, 150.into(), None)
+            .get_cells(search(), Order::Asc, 150.into(), None)
             .is_err());
         assert!(rpc
-            .get_transactions(search.clone(), Order::Asc, 150.into(), None)
+            .get_transactions(search(), Order::Asc, 150.into(), None)
             .is_err());
-        assert!(rpc.get_cells_capacity(search).is_err());
+        assert!(rpc.get_cells_capacity(search()).is_err());
     }
 }
 
