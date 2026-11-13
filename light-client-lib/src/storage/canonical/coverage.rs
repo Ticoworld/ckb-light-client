@@ -443,6 +443,49 @@ pub(crate) fn affects_scope<S: StorageBackend + ?Sized>(
     Ok(false)
 }
 
+/// A capacity snapshot may describe the last fully indexed prefix while
+/// forward filter work is pending, provided every watched cursor is aligned
+/// and no saved range reaches back into that prefix.
+pub(crate) fn prefix_available<S: StorageBackend + ?Sized>(
+    storage: &S,
+    scope: &[u8],
+    accepted_tip: u64,
+) -> Result<bool> {
+    let Some(cursor) = script_cursor(storage, scope)? else {
+        return Ok(false);
+    };
+    if cursor >= accepted_tip {
+        return Ok(false);
+    }
+
+    let cursors = script_cursors(storage)?;
+    if cursors.is_empty() || cursors.iter().any(|(_, number)| *number != cursor) {
+        return Ok(false);
+    }
+
+    let prefix = meta(super::super::MATCHED_FILTER_BLOCKS_KEY);
+    let select = prefix.clone();
+    for row in storage.try_collect_iterator(
+        IteratorStart::From(prefix.clone()),
+        IteratorDirection::Forward,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(|_, value| Some(value.to_vec())),
+        usize::MAX,
+    )? {
+        let start = row
+            .key
+            .get(prefix.len()..)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u64::from_be_bytes)
+            .ok_or_else(|| Error::runtime("invalid coverage key"))?;
+        let range = decode(&row.value)?;
+        if start <= cursor || !current(storage, start, &range)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Called only after validating the filter hash chain and matching its script
 /// data. Script updates, acceptance, proof admission and indexing share the
 /// matched-block lock; the revision is captured before computing the matches.

@@ -1319,18 +1319,14 @@ async fn multi_script_pending_coverage_only_fences_the_behind_script() {
             assert_a_available(&service);
             assert_b_fenced(&service);
 
-            // The unproved page survives a restart. An unmatched page can be
-            // completed, but B remains incomplete until it catches up to tip.
+            // The unproved page survives a restart. All-unmatched pages are
+            // already reflected in the cursor, but B remains behind the tip.
             drop(service);
             f = f.reopen();
             let service = queries(&f);
             assert_a_available(&service);
             assert_b_fenced(&service);
             if !matched {
-                f.storage.finish_matched_blocks(55, 55);
-                let service = queries(&f);
-                assert_a_available(&service);
-                assert_b_fenced(&service);
                 f.storage.update_block_number(100);
                 let service = queries(&f);
                 assert!(service

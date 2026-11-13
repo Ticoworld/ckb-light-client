@@ -4,8 +4,8 @@
 //! handler. They are synchronous and do not form a database compare-and-swap.
 //! Acceptance and watched indexing also share the matched-block write lock.
 use super::{
-    BatchWriter, HeaderWithExtension, IteratorDirection, IteratorStart, Key, StorageBackend, Value,
-    LAST_STATE_KEY,
+    extract_raw_data, BatchWriter, HeaderWithExtension, IteratorDirection, IteratorStart, Key,
+    KeyPrefix, StorageBackend, Value, LAST_STATE_KEY,
 };
 use crate::error::{Error, Result};
 use ckb_types::{core::HeaderView, packed, prelude::*, U256};
@@ -444,19 +444,27 @@ pub(crate) fn index_ready<S: StorageBackend + ?Sized>(storage: &S) -> Result<()>
 }
 #[cfg(test)]
 pub(crate) fn query_context<S: StorageBackend + ?Sized>(storage: &S) -> Result<Vec<u8>> {
-    query_context_inner(storage, None)
+    query_context_inner(storage, None, false)
 }
 
 pub(crate) fn query_context_for<S: StorageBackend + ?Sized>(
     storage: &S,
     scope: &[u8],
 ) -> Result<Vec<u8>> {
-    query_context_inner(storage, Some(scope))
+    query_context_inner(storage, Some(scope), false)
+}
+
+pub(crate) fn query_context_for_capacity<S: StorageBackend + ?Sized>(
+    storage: &S,
+    scope: &[u8],
+) -> Result<Vec<u8>> {
+    query_context_inner(storage, Some(scope), true)
 }
 
 fn query_context_inner<S: StorageBackend + ?Sized>(
     storage: &S,
     scope: Option<&[u8]>,
+    allow_capacity_prefix: bool,
 ) -> Result<Vec<u8>> {
     index_ready(storage)?;
     let rows = storage.get_many(&[
@@ -494,7 +502,13 @@ fn query_context_inner<S: StorageBackend + ?Sized>(
         Some(scope) => coverage::affects_scope(storage, scope, tip.number())?,
         None => coverage::affects_index(storage)?,
     };
-    if affects_scope || recovery::repair_pending(storage)? {
+    let capacity_prefix = match (allow_capacity_prefix, scope) {
+        (true, Some(scope)) if affects_scope && !recovery::repair_pending(storage)? => {
+            coverage::prefix_available(storage, scope, tip.number())?
+        }
+        _ => false,
+    };
+    if (affects_scope && !capacity_prefix) || recovery::repair_pending(storage)? {
         return Err(Error::runtime(
             "canonical_state:repair_pending: watched coverage is being reindexed in place",
         ));
@@ -541,6 +555,19 @@ pub(crate) fn check_query_context_for<S: StorageBackend + ?Sized>(
     Ok(())
 }
 
+pub(crate) fn check_query_context_for_capacity<S: StorageBackend + ?Sized>(
+    storage: &S,
+    context: &[u8],
+    scope: &[u8],
+) -> Result<()> {
+    if query_context_for_capacity(storage, scope)? != context {
+        return Err(Error::runtime(
+            "canonical_state:retry: chain or watched index changed during query",
+        ));
+    }
+    Ok(())
+}
+
 /// Forward-work availability must not label a certified-prefix balance with the
 /// newer accepted tip. Without a common cursor and authenticated header, retain
 /// the conservative capacity-query fence rather than fabricate snapshot metadata.
@@ -578,11 +605,36 @@ pub(crate) fn forward_capacity_header<S: StorageBackend + ?Sized>(
     if number == Unpack::<u64>::unpack(&accepted.raw().number()) {
         return Ok(accepted);
     }
-    let hash = storage
-        .get(Key::BlockNumber(number).into_vec())?
+    indexed_header_at_or_before(storage, number, None)
+}
+
+fn indexed_header_at_or_before<S: StorageBackend + ?Sized>(
+    storage: &S,
+    number: u64,
+    scope: Option<&[u8]>,
+) -> Result<packed::Header> {
+    let key = Key::BlockNumber(number).into_vec();
+    let prefix = vec![KeyPrefix::BlockNumber as u8];
+    let select = prefix.clone();
+    let rows = storage.try_collect_iterator(
+        IteratorStart::From(key),
+        IteratorDirection::Reverse,
+        Box::new(move |key| key.starts_with(&select)),
+        Box::new(move |key, value| {
+            let height = key
+                .get(1..)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u64::from_be_bytes)?;
+            (height <= number).then(|| value.to_vec())
+        }),
+        1,
+    )?;
+    let hash = rows
+        .first()
+        .map(|row| packed::Byte32::from_slice(&row.value))
+        .transpose()
+        .map_err(|_| Error::runtime("invalid indexed block hash"))?
         .ok_or_else(|| Error::runtime("canonical_state:retry: indexed header is not available"))?;
-    let hash = packed::Byte32::from_slice(&hash)
-        .map_err(|_| Error::runtime("invalid indexed block hash"))?;
     let bytes = storage
         .get(Key::BlockHash(&hash).into_vec())?
         .ok_or_else(|| Error::runtime("canonical_state:retry: indexed header is not available"))?;
@@ -590,15 +642,70 @@ pub(crate) fn forward_capacity_header<S: StorageBackend + ?Sized>(
         .get(..packed::Header::TOTAL_SIZE)
         .and_then(|bytes| packed::Header::from_slice(bytes).ok())
         .ok_or_else(|| Error::runtime("invalid indexed header"))?;
+    let header_number = Unpack::<u64>::unpack(&header.raw().number());
     if header.calc_header_hash() != hash
-        || Unpack::<u64>::unpack(&header.raw().number()) != number
+        || header_number > number
         || !anchor_current(storage, &header)?
     {
         return Err(Error::runtime(
             "canonical_state:retry: indexed header is not current",
         ));
     }
+    if header_number < number {
+        let Some(scope) = scope else {
+            return Err(Error::runtime(
+                "canonical_state:retry: indexed header is not available",
+            ));
+        };
+        if has_indexed_activity_after(storage, scope, header_number, number)? {
+            return Err(Error::runtime(
+                "canonical_state:retry: indexed header does not cover the watched prefix",
+            ));
+        }
+    }
     Ok(header)
+}
+
+fn has_indexed_activity_after<S: StorageBackend + ?Sized>(
+    storage: &S,
+    scope: &[u8],
+    after: u64,
+    through: u64,
+) -> Result<bool> {
+    let Some((script_type, script_bytes)) = scope.split_last() else {
+        return Err(Error::runtime("invalid query scope"));
+    };
+    let script = packed::Script::from_slice(script_bytes)
+        .map_err(|_| Error::runtime("invalid query script scope"))?;
+    let mut prefix = vec![match *script_type {
+        0 => KeyPrefix::TxLockScript as u8,
+        1 => KeyPrefix::TxTypeScript as u8,
+        _ => return Err(Error::runtime("invalid query script type")),
+    }];
+    prefix.extend(extract_raw_data(&script));
+    let mut start = prefix.clone();
+    start.extend(
+        after
+            .checked_add(1)
+            .ok_or_else(|| Error::runtime("indexed height overflow"))?
+            .to_be_bytes(),
+    );
+    let select = prefix.clone();
+    Ok(!storage
+        .try_collect_iterator(
+            IteratorStart::From(start),
+            IteratorDirection::Forward,
+            Box::new(move |key| key.starts_with(&select)),
+            Box::new(move |key, value| {
+                let height = key
+                    .get(prefix.len()..prefix.len() + 8)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .map(u64::from_be_bytes)?;
+                (height <= through).then(|| value.to_vec())
+            }),
+            1,
+        )?
+        .is_empty())
 }
 
 pub(crate) fn forward_capacity_header_for<S: StorageBackend + ?Sized>(
@@ -607,8 +714,12 @@ pub(crate) fn forward_capacity_header_for<S: StorageBackend + ?Sized>(
     scope: &[u8],
 ) -> Result<packed::Header> {
     let tip = Unpack::<u64>::unpack(&accepted.raw().number());
-    if coverage::script_cursor(storage, scope)? == Some(tip) {
-        return Ok(accepted);
+    match coverage::script_cursor(storage, scope)? {
+        Some(cursor) if cursor == tip => return Ok(accepted),
+        Some(cursor) if coverage::prefix_available(storage, scope, tip)? => {
+            return indexed_header_at_or_before(storage, cursor, Some(scope));
+        }
+        _ => {}
     }
     forward_capacity_header(storage, accepted)
 }

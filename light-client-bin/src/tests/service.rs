@@ -888,11 +888,19 @@ fn rpc() {
     let rpc = create_block_filter_rpc(storage.clone(), create_peers());
 
     // This low-level rollback removes indexed rows but does not establish the
-    // replacement accepted tip or complete filter coverage. Wallet reads must
-    // remain fenced until the normal canonical recovery path proves that state.
-    for script in [lock_script1.clone(), type_script1.clone()] {
+    // replacement accepted tip or complete filter coverage. Cell and
+    // transaction reads remain fenced; capacity may report only the common,
+    // authenticated prefix retained by every watched script.
+    for (script, script_type) in [
+        (lock_script1.clone(), ScriptType::Lock),
+        (type_script1.clone(), ScriptType::Type),
+    ] {
         let search = || SearchKey {
             script: script.clone().into(),
+            script_type: match &script_type {
+                ScriptType::Lock => ScriptType::Lock,
+                ScriptType::Type => ScriptType::Type,
+            },
             ..Default::default()
         };
         assert!(rpc
@@ -901,7 +909,15 @@ fn rpc() {
         assert!(rpc
             .get_transactions(search(), Order::Asc, 500.into(), None)
             .is_err());
-        assert!(rpc.get_cells_capacity(search()).is_err());
+        let capacity = rpc.get_cells_capacity(search()).unwrap();
+        assert_eq!(capacity.block_number.value(), total_blocks - 3);
+        assert_eq!(
+            capacity.block_hash,
+            storage
+                .get_block_hash((total_blocks - 3).into())
+                .unwrap()
+                .unpack()
+        );
     }
 
     // test get_transaction rpc

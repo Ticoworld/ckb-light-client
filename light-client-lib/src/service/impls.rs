@@ -569,7 +569,7 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
     /// the search criteria and returns the total along with current tip block info.
     pub fn get_cells_capacity(&self, search_key: SearchKey) -> Result<CellsCapacity> {
         let scope = query_scope(&search_key);
-        let context = canonical::query_context_for(self.storage.as_ref(), &scope)?;
+        let context = canonical::query_context_for_capacity(self.storage.as_ref(), &scope)?;
         let query_error = Arc::new(Mutex::new(None));
         let query_cache = Arc::new(Mutex::new(None));
         let (prefix, iter_start, iter_direction) = build_query_options(
@@ -696,7 +696,7 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
         )?;
 
         query_result(&query_error)?;
-        canonical::check_query_context_for(self.storage.as_ref(), &context, &scope)?;
+        canonical::check_query_context_for_capacity(self.storage.as_ref(), &context, &scope)?;
         let capacity: u64 = results
             .into_iter()
             .filter_map(|kv_pair| {
@@ -709,7 +709,7 @@ impl<S: LightClientStorage + 'static> LightClientService<S> {
             .map_err(|_| Error::runtime("invalid accepted state"))?;
         let tip_header =
             canonical::forward_capacity_header_for(self.storage.as_ref(), tip_header, &scope)?;
-        canonical::check_query_context_for(self.storage.as_ref(), &context, &scope)?;
+        canonical::check_query_context_for_capacity(self.storage.as_ref(), &context, &scope)?;
 
         Ok(CellsCapacity {
             capacity: capacity.into(),
