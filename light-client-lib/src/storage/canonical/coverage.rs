@@ -390,13 +390,6 @@ pub(crate) fn script_cursor<S: StorageBackend + ?Sized>(
         .transpose()
 }
 
-pub(crate) fn cursors_diverge<S: StorageBackend + ?Sized>(storage: &S) -> Result<bool> {
-    let cursors = script_cursors(storage)?;
-    Ok(cursors
-        .first()
-        .is_some_and(|(_, first)| cursors.iter().any(|(_, cursor)| cursor != first)))
-}
-
 /// A lagging script cannot claim a complete current-tip result while another
 /// script is ahead. A current pending range still fences a scope it reaches;
 /// invalid ranges and aligned-cursor queries retain the existing conservative

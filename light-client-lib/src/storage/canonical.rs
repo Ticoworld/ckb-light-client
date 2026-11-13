@@ -604,13 +604,8 @@ pub(crate) fn forward_capacity_header_for<S: StorageBackend + ?Sized>(
     accepted: packed::Header,
     scope: &[u8],
 ) -> Result<packed::Header> {
-    if coverage::cursors_diverge(storage)? {
-        let tip = Unpack::<u64>::unpack(&accepted.raw().number());
-        if coverage::script_cursor(storage, scope)? != Some(tip) {
-            return Err(Error::runtime(
-                "canonical_state:retry: requested script is not indexed through accepted tip",
-            ));
-        }
+    let tip = Unpack::<u64>::unpack(&accepted.raw().number());
+    if coverage::script_cursor(storage, scope)? == Some(tip) {
         return Ok(accepted);
     }
     forward_capacity_header(storage, accepted)
