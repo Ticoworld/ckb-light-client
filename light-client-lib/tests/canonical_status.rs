@@ -1228,7 +1228,7 @@ async fn multi_script_pending_coverage_only_fences_the_behind_script() {
                 let next = core::HeaderBuilder::default()
                     .number(number)
                     .parent_hash(tip.hash())
-                    .epoch(core::EpochNumberWithFraction::new(0, number, 100))
+                    .epoch(core::EpochNumberWithFraction::new(0, number, 101))
                     .build();
                 f.storage.update_last_state(
                     &U256::from(number + 1),
