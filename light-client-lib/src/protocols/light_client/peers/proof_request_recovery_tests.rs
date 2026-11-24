@@ -1,7 +1,7 @@
 use ckb_network::CKBProtocolHandler;
 use ckb_types::{
     packed,
-    prelude::{Builder, Entity, Pack, PackVec},
+    prelude::{Builder, Entity, PackVec},
     utilities::merkle_mountain_range::VerifiableHeader,
 };
 
