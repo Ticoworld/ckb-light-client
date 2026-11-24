@@ -5,11 +5,13 @@ use std::collections::HashSet;
 use ckb_types::{
     core::HeaderView,
     packed,
-    prelude::{Entity, Pack, Unpack},
+    prelude::{Entity, IntoBlockView, IntoHeaderView, Pack, Unpack},
 };
 use serde::{Deserialize, Serialize};
 
-use super::{anchor_current, member, member_key, meta, INDEX_WRITING};
+use super::{
+    anchor_current, bump_revision, index_ready, member, member_key, meta, recovery, INDEX_WRITING,
+};
 use crate::error::{Error, Result};
 use crate::storage::{
     BatchWriter, IteratorDirection, IteratorStart, Key, LightClientStorage, StorageBackend,

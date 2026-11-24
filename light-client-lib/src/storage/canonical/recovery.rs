@@ -9,9 +9,8 @@ use ckb_types::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    bind, finish_revision, initialize_index_format, member, meta, update_state, ACCEPT,
-    ASSOCIATION, CONTEXT, INDEX_FORMAT, INDEX_UNCERTAIN, INDEX_WRITING, MEMBERS, RECOVERY_FORMAT,
-    TRANSITION,
+    bind, finish_revision, initialize_index_format, member, meta, update_state, ASSOCIATION,
+    CONTEXT, INDEX_FORMAT, INDEX_UNCERTAIN, INDEX_WRITING, MEMBERS, RECOVERY_FORMAT, TRANSITION,
 };
 use crate::error::{Error, Result};
 use crate::storage::{

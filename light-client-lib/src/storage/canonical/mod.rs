@@ -6,7 +6,7 @@
 use ckb_types::{
     core::HeaderView,
     packed,
-    prelude::{Entity, IntoHeaderView, Pack, Unpack},
+    prelude::{Entity, IntoHeaderView, Unpack},
     U256,
 };
 
