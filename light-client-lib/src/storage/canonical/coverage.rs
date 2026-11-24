@@ -1,9 +1,19 @@
 //! Pending filter coverage is the single durable source of positional expectations.
 //! The first eight bytes retain the legacy count for rollback/coverage-target readers.
-use super::*;
-use crate::storage::LightClientStorage;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+
+use ckb_types::{
+    core::HeaderView,
+    packed,
+    prelude::{Entity, Pack, Unpack},
+};
+use serde::{Deserialize, Serialize};
+
+use super::{anchor_current, member, member_key, meta, INDEX_WRITING};
+use crate::error::{Error, Result};
+use crate::storage::{
+    BatchWriter, IteratorDirection, IteratorStart, Key, LightClientStorage, StorageBackend,
+};
 
 const MAGIC: &[u8] = b"\0CKBPOS1";
 const SCRIPTS_REVISION: &str = "FILTER_SCRIPT_REVISION_V1";
@@ -599,10 +609,12 @@ pub(crate) enum HeaderCheckError {
     #[error("proof does not match saved filter positions; refilter required")]
     Mismatch,
 }
+
+pub(crate) type HeaderCheckResult<T> = std::result::Result<T, HeaderCheckError>;
 pub(crate) fn check_headers<S: LightClientStorage + ?Sized>(
     storage: &S,
     headers: &[HeaderView],
-) -> std::result::Result<bool, HeaderCheckError> {
+) -> HeaderCheckResult<bool> {
     let Some(first) = earliest(storage)? else {
         return Ok(true);
     };
@@ -816,7 +828,12 @@ pub(crate) fn cached_matches<S: LightClientStorage + ?Sized>(
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod format_tests {
-    use super::*;
+    use ckb_types::{
+        packed,
+        prelude::{Entity, Pack},
+    };
+
+    use super::{decode, encode, Positions, Range, MAGIC};
     #[test]
     fn positional_frames_are_disjoint_from_every_legacy_hash_prefix() {
         let mut hash = [0u8; 32];

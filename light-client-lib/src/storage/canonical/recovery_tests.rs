@@ -1,13 +1,32 @@
 //! Failure boundaries use real backend batches and reopen the preserved database.
-#[path = "wo44_tests.rs"]
-mod wo44_tests;
-use super::*;
-use crate::storage::{FilterMapFn, KVPair, Storage, TakeWhileFn};
-use ckb_chain_spec::consensus::ConsensusBuilder;
-use ckb_types::core;
+#[path = "watched_coverage_tests.rs"]
+mod watched_coverage_tests;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
+};
+
+use ckb_chain_spec::consensus::ConsensusBuilder;
+use ckb_types::{
+    core, packed,
+    prelude::{
+        AsBlockBuilder, AsHeaderBuilder, Builder, Entity, IntoBlockView, IntoHeaderView, Pack,
+        Unpack,
+    },
+    U256,
+};
+
+use super::super::{
+    accept_with_rollback, anchor_current, begin_index, check_query_context, coverage, finish_index,
+    member, member_key, meta, query_context, recover, repair_pending, store_proved_header,
+    transaction, update_state, INDEX_FORMAT, INDEX_UNCERTAIN, INDEX_WRITING, LAST_STATE_KEY,
+    TRANSITION,
+};
+use super::{decode, scan, start_repair, Repair, ACCEPT, REPAIR};
+use crate::error::{Error, Result};
+use crate::storage::{
+    BatchWriter, FilterMapFn, IteratorDirection, IteratorStart, KVPair, Key, LightClientStorage,
+    ScriptStatus, ScriptType, SetScriptsCommand, Storage, StorageBackend, TakeWhileFn,
 };
 
 struct Fault {

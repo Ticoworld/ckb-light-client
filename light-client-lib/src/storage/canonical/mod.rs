@@ -3,21 +3,24 @@
 //! Proof anchor checks and commits require the existing single accepting protocol
 //! handler. They are synchronous and do not form a database compare-and-swap.
 //! Acceptance and watched indexing also share the matched-block write lock.
+use ckb_types::{
+    core::HeaderView,
+    packed,
+    prelude::{Entity, IntoHeaderView, Pack, Unpack},
+    U256,
+};
+
 use super::{
     extract_raw_data, BatchWriter, HeaderWithExtension, IteratorDirection, IteratorStart, Key,
     KeyPrefix, StorageBackend, Value, LAST_STATE_KEY,
 };
 use crate::error::{Error, Result};
-use ckb_types::{core::HeaderView, packed, prelude::*, U256};
 
-#[path = "canonical/coverage.rs"]
 pub(crate) mod coverage;
-#[path = "canonical/ordinals.rs"]
 mod ordinals;
 pub(crate) use ordinals::{
     needs_ordinal_body, ordinal_bodies, queue_ordinal_body, recover_ordinals,
 };
-#[path = "canonical/recovery.rs"]
 mod recovery;
 pub(crate) use recovery::{accept_with_rollback, complete_repair, recover, register};
 
@@ -820,14 +823,22 @@ pub(crate) fn finish_index<S: super::LightClientStorage + ?Sized>(
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod investigation_index_replay {
-    use super::*;
+    use std::sync::Arc;
+
+    use ckb_chain_spec::consensus::ConsensusBuilder;
+    use ckb_types::{
+        core, packed,
+        prelude::{Builder, Pack},
+        U256,
+    };
+
+    use super::{
+        begin_index, finish_index, index_ready, member, meta, query_context, INDEX_WRITING,
+    };
     use crate::{
         service::{LightClientService, SearchKey},
         storage::{LightClientStorage, ScriptStatus, ScriptType, SetScriptsCommand, Storage},
     };
-    use ckb_chain_spec::consensus::ConsensusBuilder;
-    use ckb_types::core;
-    use std::sync::Arc;
 
     #[test]
     fn investigation_index_writing_one_replays_after_reopen_without_registration() {

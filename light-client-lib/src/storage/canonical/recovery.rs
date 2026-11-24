@@ -1,8 +1,23 @@
 //! Durable intent and derived-index repair. Primary transactions/headers and
 //! user keys are never used as a source of canonical membership or deleted.
-use super::*;
-use crate::storage::{KeyPrefix, LightClientStorage, ScriptStatus, SetScriptsCommand};
+use ckb_types::{
+    core::HeaderView,
+    packed,
+    prelude::{Entity, IntoHeaderView, Unpack},
+    U256,
+};
 use serde::{Deserialize, Serialize};
+
+use super::{
+    bind, finish_revision, initialize_index_format, member, meta, update_state, ACCEPT,
+    ASSOCIATION, CONTEXT, INDEX_FORMAT, INDEX_UNCERTAIN, INDEX_WRITING, MEMBERS, RECOVERY_FORMAT,
+    TRANSITION,
+};
+use crate::error::{Error, Result};
+use crate::storage::{
+    BatchWriter, IteratorDirection, IteratorStart, KeyPrefix, LightClientStorage, ScriptStatus,
+    SetScriptsCommand, StorageBackend,
+};
 
 const REGISTRATION: &str = "INDEX_REGISTRATION_V2";
 const REPAIR: &str = "INDEX_REPAIR_V2";

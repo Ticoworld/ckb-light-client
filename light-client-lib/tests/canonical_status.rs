@@ -1,22 +1,33 @@
 //! Deterministic protocol tests: an explicitly trusted fixture anchor and DummyPoW
 //! consensus, with real response PoW/MMR/Merkle processing. Not a real-chain reorg.
 #![cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+
 use ckb_chain_spec::consensus::{Consensus, ConsensusBuilder};
 pub use ckb_light_client_lib::protocols;
 use ckb_light_client_lib::{
     protocols::{LastState, LightClientProtocol, Peers, PendingTxs, ProveRequest, ProveState},
-    service::{FetchStatus, LightClientChainService},
-    storage::{LightClientStorage, Storage, StorageWithChainData},
+    service::{FetchStatus, LightClientChainService, LightClientService, Order, SearchKey},
+    storage::{
+        BatchWriter, FilterMapFn, HeaderWithExtension, IteratorDirection, IteratorStart, KVPair,
+        Key, LightClientStorage, ScriptStatus, ScriptType, SetScriptsCommand, Storage,
+        StorageBackend, StorageWithChainData, TakeWhileFn,
+    },
 };
 use ckb_merkle_mountain_range::{leaf_index_to_pos, util::MemMMR};
 use ckb_network::{CKBProtocolHandler, PeerIndex, SupportProtocols};
 use ckb_types::{
-    core, packed,
-    prelude::*,
+    core,
+    core::cell::{CellProvider, CellStatus},
+    packed,
+    prelude::{
+        AsHeaderBuilder, Builder, Entity, IntoBlockView, IntoHeaderView, IntoTransactionView, Pack,
+        Unpack,
+    },
     utilities::merkle_mountain_range::{MergeHeaderDigest, VerifiableHeader},
     U256,
 };
-use std::sync::Arc;
+
 // Reused transport has helpers for other protocol suites.
 #[allow(dead_code)]
 #[path = "../src/tests/utils/network_context.rs"]
@@ -37,14 +48,6 @@ struct Fixture {
     extra_block: Option<core::BlockView>,
     containing_block: core::BlockView,
 }
-
-use ckb_light_client_lib::{
-    service::{LightClientService, Order, SearchKey},
-    storage::{
-        HeaderWithExtension, Key, ScriptStatus, ScriptType, SetScriptsCommand, StorageBackend,
-    },
-};
-use ckb_types::core::cell::{CellProvider, CellStatus};
 
 fn fetch_info(f: &Fixture, hash: &ckb_types::H256, header: bool) -> (u64, u64, bool) {
     let swc = StorageWithChainData::new(
@@ -2326,9 +2329,6 @@ async fn matching_invalid_proof_requeues_fetch_before_retiring_request() {
 
 // Faults happen BEFORE the selected atomic write; earlier committed stages survive.
 // This models process loss at those persistence boundaries without changing production code.
-use ckb_light_client_lib::storage::{
-    BatchWriter, FilterMapFn, IteratorDirection, IteratorStart, KVPair, TakeWhileFn,
-};
 struct InvestigationFaultStorage {
     storage: Storage,
     fail_prefix: Vec<u8>,
