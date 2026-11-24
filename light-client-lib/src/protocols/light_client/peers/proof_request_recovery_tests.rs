@@ -1,3 +1,4 @@
+use ckb_network::CKBProtocolHandler;
 use ckb_types::{
     packed,
     prelude::{Builder, Pack},

@@ -6,7 +6,7 @@ use std::sync::{
 use ckb_chain_spec::consensus::ConsensusBuilder;
 use ckb_types::{
     core, packed,
-    prelude::{AsHeaderBuilder, Builder, IntoHeaderView, Pack, PackVec, Unpack},
+    prelude::{IntoHeaderView, Unpack},
     U256,
 };
 

@@ -838,7 +838,7 @@ mod investigation_index_replay {
     use crate::{
         service::{LightClientService, SearchKey},
         storage::{
-            LightClientStorage, ScriptStatus, ScriptType, SetScriptsCommand, Storage,
+            BatchWriter, LightClientStorage, ScriptStatus, ScriptType, SetScriptsCommand, Storage,
             StorageBackend,
         },
     };
