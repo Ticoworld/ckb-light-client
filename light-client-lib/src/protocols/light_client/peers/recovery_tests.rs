@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ckb_network::{CKBProtocolHandler, PeerIndex};
 use ckb_types::{
     packed,
-    prelude::{AsHeaderBuilder, Builder, Entity, IntoHeaderView, Pack},
+    prelude::{Builder, Entity, IntoHeaderView, Pack},
     utilities::merkle_mountain_range::VerifiableHeader,
 };
 

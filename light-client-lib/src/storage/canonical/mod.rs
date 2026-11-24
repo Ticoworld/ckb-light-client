@@ -828,7 +828,7 @@ mod investigation_index_replay {
     use ckb_chain_spec::consensus::ConsensusBuilder;
     use ckb_types::{
         core, packed,
-        prelude::{Builder, Pack},
+        prelude::{Builder, Entity, Pack},
         U256,
     };
 
@@ -837,7 +837,10 @@ mod investigation_index_replay {
     };
     use crate::{
         service::{LightClientService, SearchKey},
-        storage::{LightClientStorage, ScriptStatus, ScriptType, SetScriptsCommand, Storage},
+        storage::{
+            LightClientStorage, ScriptStatus, ScriptType, SetScriptsCommand, Storage,
+            StorageBackend,
+        },
     };
 
     #[test]

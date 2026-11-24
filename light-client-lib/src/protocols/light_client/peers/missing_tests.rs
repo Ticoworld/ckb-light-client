@@ -4,7 +4,7 @@ use ckb_chain_spec::consensus::ConsensusBuilder;
 use ckb_network::{CKBProtocolHandler, PeerIndex};
 use ckb_types::{
     packed,
-    prelude::{AsHeaderBuilder, Builder, Entity, IntoBlockView, IntoHeaderView, Pack, Unpack},
+    prelude::{Builder, Entity, IntoBlockView, IntoHeaderView, Pack, PackVec, Reader, Unpack},
 };
 
 use crate::tests::utils::faketime;

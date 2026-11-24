@@ -9,24 +9,20 @@ use std::sync::{
 use ckb_chain_spec::consensus::ConsensusBuilder;
 use ckb_types::{
     core, packed,
-    prelude::{
-        AsBlockBuilder, AsHeaderBuilder, Builder, Entity, IntoBlockView, IntoHeaderView, Pack,
-        Unpack,
-    },
+    prelude::{Builder, Entity, IntoBlockView, IntoHeaderView, Pack, Unpack},
     U256,
 };
 
 use super::super::{
-    accept_with_rollback, anchor_current, begin_index, check_query_context, coverage, finish_index,
-    member, member_key, meta, query_context, recover, repair_pending, store_proved_header,
-    transaction, update_state, INDEX_FORMAT, INDEX_UNCERTAIN, INDEX_WRITING, LAST_STATE_KEY,
-    TRANSITION,
+    accept_with_rollback, anchor_current, begin_index, check_query_context, finish_index, member,
+    member_key, meta, query_context, recover, store_proved_header, transaction, update_state,
+    INDEX_FORMAT, INDEX_UNCERTAIN, INDEX_WRITING, LAST_STATE_KEY, TRANSITION,
 };
-use super::{decode, scan, start_repair, Repair, ACCEPT, REPAIR};
+use super::{decode, repair_pending, scan, start_repair, Repair, ACCEPT, REPAIR};
 use crate::error::{Error, Result};
 use crate::storage::{
     BatchWriter, FilterMapFn, IteratorDirection, IteratorStart, KVPair, Key, LightClientStorage,
-    ScriptStatus, ScriptType, SetScriptsCommand, Storage, StorageBackend, TakeWhileFn,
+    ScriptStatus, SetScriptsCommand, Storage, StorageBackend, TakeWhileFn,
 };
 
 struct Fault {
