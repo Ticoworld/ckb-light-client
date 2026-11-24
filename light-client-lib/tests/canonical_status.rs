@@ -21,8 +21,7 @@ use ckb_types::{
     core::cell::{CellProvider, CellStatus},
     packed,
     prelude::{
-        AsHeaderBuilder, Builder, Entity, IntoBlockView, IntoHeaderView, IntoTransactionView, Pack,
-        Unpack,
+        Builder, Entity, IntoBlockView, IntoHeaderView, IntoTransactionView, Pack, PackVec, Unpack,
     },
     utilities::merkle_mountain_range::{MergeHeaderDigest, VerifiableHeader},
     U256,
